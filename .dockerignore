@@ -1,0 +1,17 @@
+work/
+work/**
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+*.tmp

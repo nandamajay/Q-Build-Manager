@@ -1,0 +1,10 @@
+# Ignore the entire workspace folder (builds, source code, registries)
+work/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.log
+
+# Ignore OS files
+.DS_Store
