@@ -16,7 +16,8 @@ RUN apt-get update && apt-get install -y \
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8
 
-RUN pip3 install kas
+# Install Web Dependencies
+RUN pip3 install kas flask flask-socketio eventlet
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

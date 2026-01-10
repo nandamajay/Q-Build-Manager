@@ -18,13 +18,12 @@ if ! id -u builder > /dev/null 2>&1; then
     useradd -u "$USER_ID" -g "$GROUP_ID" -m builder
 fi
 
+# Fix permissions
 chown -R builder:builder /work
 
 export TERM=xterm-256color
+export LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8
 
-# Launch the Manager
-if [ "$#" -eq 0 ]; then
-    exec gosu builder python3 /work/q-build-manager.py
-else
-    exec gosu builder "$@"
-fi
+# Switch to builder and run the command passed from docker run
+exec gosu builder "$@"
