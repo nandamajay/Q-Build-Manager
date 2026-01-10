@@ -1,13 +1,13 @@
-
 import os
 import yaml
 import glob
 import subprocess
 import pty
 import threading
+import time
 import signal
 from flask import Flask, render_template_string, request, redirect, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -17,7 +17,10 @@ SERVER_PORT = int(os.environ.get("WEB_PORT", 5000))
 WORK_DIR = "/work"
 REGISTRY_FILE = os.path.join(WORK_DIR, "projects_registry.yaml")
 
-# --- UTILS ---
+# --- GLOBAL STATE ---
+# Stores: {'project_name': {'status': 'running'|'done'|'failed', 'logs': [], 'pid': 123}}
+BUILD_STATES = {}
+
 def load_registry():
     if not os.path.exists(REGISTRY_FILE): return {}
     with open(REGISTRY_FILE, "r") as f: return yaml.safe_load(f) or {}
@@ -83,11 +86,29 @@ DASHBOARD_HTML = """
 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {% for name, path in projects.items() %}
     <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg hover:border-blue-500 transition relative">
-        <h3 class="text-xl font-bold mb-2">{{ name }}</h3>
-        <p class="text-gray-400 text-xs mb-4 truncate">{{ path }}</p>
-        <div class="flex justify-between mt-4">
-             <a href="/build/{{ name }}" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded text-white text-sm"><i class="fas fa-hammer mr-1"></i> Build</a>
-             <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2" onclick="return confirm('Delete registry entry?')"><i class="fas fa-trash"></i></a>
+        <div class="flex justify-between items-start">
+            <div>
+                <h3 class="text-xl font-bold mb-1">{{ name }}</h3>
+                <p class="text-gray-400 text-xs mb-4 truncate w-48">{{ path }}</p>
+            </div>
+            {% if states.get(name, {}).get('status') == 'running' %}
+            <span class="animate-pulse bg-yellow-600 text-white text-xs px-2 py-1 rounded">BUILDING</span>
+            {% endif %}
+        </div>
+        
+        <div class="flex justify-between mt-4 items-center">
+             {% if states.get(name, {}).get('status') == 'running' %}
+                 <a href="/build/{{ name }}" class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-white text-sm w-full text-center mr-2">
+                    <i class="fas fa-eye mr-1"></i> View Logs
+                 </a>
+             {% else %}
+                 <a href="/build/{{ name }}" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded text-white text-sm">
+                    <i class="fas fa-hammer mr-1"></i> Build
+                 </a>
+                 <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2" onclick="return confirm('Delete registry entry?')">
+                    <i class="fas fa-trash"></i>
+                 </a>
+             {% endif %}
         </div>
     </div>
     {% else %}
@@ -139,12 +160,12 @@ BUILD_CONSOLE_HTML = """
             <div class="text-sm text-gray-400 mt-1">
                 Topology: 
                 <span id="topoDisplay" class="font-bold text-white bg-gray-700 px-2 py-0.5 rounded ml-1">{{ config.topology }}</span>
+                <span id="statusBadge" class="ml-2 px-2 py-0.5 rounded text-xs uppercase font-bold bg-gray-600">IDLE</span>
             </div>
         </div>
         <div class="flex space-x-4 items-center">
-            <!-- Settings Panel -->
             <div class="bg-gray-900 px-3 py-2 rounded border border-gray-700 flex items-center space-x-3">
-                <span class="text-xs text-gray-500 uppercase font-bold">Build Settings</span>
+                <span class="text-xs text-gray-500 uppercase font-bold">Settings</span>
                 <label class="cursor-pointer flex items-center space-x-1">
                     <input type="radio" name="topo" value="ASOC" onclick="setTopo('ASOC')" {% if config.topology == 'ASOC' %}checked{% endif %}>
                     <span class="text-sm">ASOC</span>
@@ -160,7 +181,6 @@ BUILD_CONSOLE_HTML = """
         </div>
     </div>
 
-    <!-- Progress -->
     <div class="bg-gray-800 rounded-full h-5 w-full overflow-hidden border border-gray-700 relative">
         <div id="progressBar" class="bg-blue-600 h-full w-0 transition-all duration-300"></div>
         <span id="progressText" class="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">0%</span>
@@ -171,6 +191,7 @@ BUILD_CONSOLE_HTML = """
 
 <script>
     var socket = io();
+    var project = '{{ project }}';
     var term = new Terminal({
         cursorBlink: true,
         fontFamily: 'Menlo, monospace',
@@ -183,25 +204,22 @@ BUILD_CONSOLE_HTML = """
     fitAddon.fit();
     window.onresize = () => fitAddon.fit();
 
-    term.writeln('\\x1b[1;34m--- Ready to Build ---\\x1b[0m');
-    term.writeln('Select Topology above if needed, then click "Start Build".');
+    // Join room for this project
+    socket.emit('join_project', {project: project});
 
     function setTopo(val) {
         fetch('/update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({project: '{{ project }}', topology: val})
+            body: JSON.stringify({project: project, topology: val})
         }).then(r => r.json()).then(d => {
             document.getElementById('topoDisplay').innerText = val;
             term.writeln('\\r\\n\\x1b[33m[Config] Switched to ' + val + '\\x1b[0m');
         });
     }
 
-    socket.on('build_output', function(msg) {
-        // Fix for raw newlines coming from python
+    socket.on('log_chunk', function(msg) {
         term.write(msg.data);
-        
-        // Progress Bar Logic
         const match = msg.data.match(/Tasks:\\s+(\\d+)\\s+of\\s+(\\d+)/);
         if (match) {
             const pct = Math.round((parseInt(match[1]) / parseInt(match[2])) * 100);
@@ -209,44 +227,50 @@ BUILD_CONSOLE_HTML = """
             document.getElementById('progressText').innerText = pct + '%';
         }
     });
-
-    socket.on('build_done', function() {
-        term.writeln('\\r\\n\\x1b[1;32m=== BUILD COMPLETED ===\\x1b[0m');
-        document.getElementById('buildBtn').disabled = false;
-        document.getElementById('buildBtn').classList.remove('opacity-50');
+    
+    socket.on('build_status', function(msg) {
+        const btn = document.getElementById('buildBtn');
+        const badge = document.getElementById('statusBadge');
+        
+        if (msg.status === 'running') {
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building...';
+            badge.innerText = "RUNNING";
+            badge.className = "ml-2 px-2 py-0.5 rounded text-xs uppercase font-bold bg-yellow-600";
+        } else {
+            btn.disabled = false;
+            btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            btn.innerHTML = '<i class="fas fa-play"></i> Start Build';
+            badge.innerText = msg.status.toUpperCase();
+            badge.className = "ml-2 px-2 py-0.5 rounded text-xs uppercase font-bold " + (msg.status === 'done' ? 'bg-green-600' : 'bg-red-600');
+        }
     });
 
     function startBuild() {
         term.clear();
-        document.getElementById('buildBtn').disabled = true;
-        document.getElementById('buildBtn').classList.add('opacity-50');
-        socket.emit('start_build', {project: '{{ project }}'});
+        socket.emit('start_build', {project: project});
     }
 </script>
 """
 
-# --- FLASK ROUTES ---
 @app.route('/')
 def index():
-    return render_template_string(BASE_HTML, body_content=render_template_string(DASHBOARD_HTML, projects=load_registry()), port=SERVER_PORT)
+    return render_template_string(BASE_HTML, body_content=render_template_string(DASHBOARD_HTML, projects=load_registry(), states=BUILD_STATES), port=SERVER_PORT)
 
 @app.route('/create', methods=['GET', 'POST'])
 def create():
     if request.method == 'GET':
         return render_template_string(BASE_HTML, body_content=render_template_string(CREATE_HTML), port=SERVER_PORT)
-    
     name = request.form['name']
     base_dir = os.path.join(WORK_DIR, "meta-qcom-builds")
     proj_path = os.path.join(base_dir, name)
-    
     if os.path.exists(proj_path): return "Project exists."
     os.makedirs(proj_path, exist_ok=True)
-    
     src = os.path.join(proj_path, "meta-qcom")
     try:
         subprocess.run(["git", "clone", "https://github.com/qualcomm-linux/meta-qcom.git", src], check=True)
     except: return "Git clone failed"
-
     boards = sorted([os.path.basename(f).replace(".yml","") for f in glob.glob(os.path.join(src, "ci/*.yml"))])
     return render_template_string(BASE_HTML, body_content=render_template_string(BOARD_SELECT_HTML, boards=boards, project_name=name, project_path=proj_path), port=SERVER_PORT)
 
@@ -255,10 +279,8 @@ def finish_setup():
     name = request.form['project_name']
     path = request.form['project_path']
     board = request.form['board']
-    
     kas, img = generate_kas_config(path, board, "ASOC")
     cfg = {"board": board, "kas_files": kas, "image": img, "topology": "ASOC"}
-    
     with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
     reg = load_registry()
     reg[name] = path
@@ -283,41 +305,68 @@ def update_config():
 @app.route('/delete/<name>')
 def delete(name):
     r = load_registry()
-    if name in r: 
-        del r[name]
-        save_registry(r)
+    if name in r: del r[name]; save_registry(r)
     return redirect('/')
 
-# --- BUILD LOGIC ---
+# --- SOCKET LOGIC ---
+
+@socketio.on('join_project')
+def handle_join(data):
+    name = data['project']
+    join_room(name)
+    
+    # Replay logs if exists
+    if name in BUILD_STATES:
+        state = BUILD_STATES[name]
+        # Emit logs in one chunk to be fast
+        emit('log_chunk', {'data': "".join(state['logs'])})
+        emit('build_status', {'status': state['status']})
+    else:
+        emit('build_status', {'status': 'idle'})
+
 @socketio.on('start_build')
 def handle_build(data):
     name = data['project']
-    path, cfg = get_config(name)
     
-    # We use "script" command to fool Bitbake into thinking it has a TTY for colors
+    if name in BUILD_STATES and BUILD_STATES[name]['status'] == 'running':
+        return # Already running
+        
+    path, cfg = get_config(name)
     cmd = f"kas shell {cfg['kas_files']} -c 'bitbake {cfg['image']}'"
     
-    emit('build_output', {'data': f"\r\n\x1b[1;36m>> Starting Build for {name}...\x1b[0m\r\n"})
-    emit('build_output', {'data': f">> Topology: {cfg['topology']}\r\n"})
-    emit('build_output', {'data': f">> Command: {cmd}\r\n\r\n"})
+    # Init State
+    BUILD_STATES[name] = {'status': 'running', 'logs': [], 'pid': None}
+    emit('build_status', {'status': 'running'}, to=name)
     
-    # Run process with PTY to capture output correctly
+    header = f"\\r\\n\\x1b[1;36m>> Starting Build for {name}...\\x1b[0m\\r\\n>> Command: {cmd}\\r\\n\\r\\n"
+    BUILD_STATES[name]['logs'].append(header)
+    emit('log_chunk', {'data': header}, to=name)
+    
     master, slave = pty.openpty()
     p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
     os.close(slave)
     
+    BUILD_STATES[name]['pid'] = p.pid
+    
     def read_output():
         while True:
             try:
-                # Read 1024 bytes at a time
                 data = os.read(master, 1024)
                 if not data: break
-                # Decode and emit
-                emit('build_output', {'data': data.decode(errors='ignore')})
-            except OSError:
-                break
+                decoded = data.decode(errors='ignore')
+                BUILD_STATES[name]['logs'].append(decoded)
+                # Keep log size manageable? (Optional: if len > 10000 truncate)
+                socketio.emit('log_chunk', {'data': decoded}, to=name)
+            except OSError: break
+        
         p.wait()
-        emit('build_done', {})
+        final_status = 'done' if p.returncode == 0 else 'failed'
+        BUILD_STATES[name]['status'] = final_status
+        socketio.emit('build_status', {'status': final_status}, to=name)
+        
+        end_msg = f"\\r\\n\\x1b[1;32m=== BUILD {final_status.upper()} ===\\x1b[0m\\r\\n"
+        BUILD_STATES[name]['logs'].append(end_msg)
+        socketio.emit('log_chunk', {'data': end_msg}, to=name)
 
     threading.Thread(target=read_output).start()
 
