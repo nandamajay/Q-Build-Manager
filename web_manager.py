@@ -66,13 +66,13 @@ def background_delete(path, name):
     try: shutil.rmtree(path)
     except: pass
 
-# --- HTML TEMPLATES ---
+# --- HTML TEMPLATES (Same as V10) ---
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Q-Build Manager V10</title>
+    <title>Q-Build Manager V11</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -90,7 +90,7 @@ BASE_HTML = """
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
     <nav class="bg-gray-800 p-4 border-b border-gray-700">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-green-400">V10</span></a>
+            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-orange-400">FAST</span></a>
             <div class="flex items-center space-x-6">
                 <div class="flex items-center space-x-2 text-sm">
                     <i class="fas fa-hdd text-gray-400"></i>
@@ -127,7 +127,6 @@ EXPLORER_HTML = """
             {% endif %}
         </div>
         
-        <!-- Definition Results Modal -->
         <div id="defModal" class="hidden absolute top-10 right-10 bg-gray-800 border border-gray-600 p-4 rounded shadow-2xl z-50 w-96 max-h-96 overflow-y-auto">
             <div class="flex justify-between items-center mb-2 border-b border-gray-700 pb-2">
                 <h4 class="font-bold text-sm text-blue-400">Definitions</h4>
@@ -139,35 +138,23 @@ EXPLORER_HTML = """
 </div>
 
 <script>
-    // 1. Highlight Syntax
     hljs.highlightAll();
-
-    // 2. Tokenize Words for Navigation (Wait for HLJS to finish)
     setTimeout(() => {
         const codeBlock = document.getElementById('codeBlock');
         if (!codeBlock) return;
-
-        // Recursive function to walk TEXT nodes only
         function makeLinks(node) {
-            if (node.nodeType === 3) { // Text Node
+            if (node.nodeType === 3) { 
                 const text = node.nodeValue;
-                if (!text.trim()) return; // Skip empty whitespace
-                
-                // Split by non-word characters, keeping delimiters
+                if (!text.trim()) return; 
                 const parts = text.split(/([a-zA-Z_][a-zA-Z0-9_]*)/);
-                
                 if (parts.length > 1) {
                     const fragment = document.createDocumentFragment();
                     parts.forEach(part => {
-                        // Check if it's a valid C identifier
                         if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(part)) {
                             const span = document.createElement('span');
                             span.className = 'nav-token';
                             span.textContent = part;
-                            span.onclick = (e) => { 
-                                e.stopPropagation(); 
-                                findDef(part); 
-                            };
+                            span.onclick = (e) => { e.stopPropagation(); findDef(part); };
                             fragment.appendChild(span);
                         } else {
                             fragment.appendChild(document.createTextNode(part));
@@ -175,15 +162,12 @@ EXPLORER_HTML = """
                     });
                     node.parentNode.replaceChild(fragment, node);
                 }
-            } else if (node.nodeType === 1) { // Element Node (e.g., HLJS span)
-                // Convert childNodes to array to avoid live-collection issues while modifying
+            } else if (node.nodeType === 1) { 
                 Array.from(node.childNodes).forEach(makeLinks);
             }
         }
-        
         makeLinks(codeBlock);
-        console.log("Navigation tokens applied.");
-    }, 100); // 100ms delay ensures HighlightJS is done
+    }, 100);
 
     function findDef(symbol) {
         if (!symbol) return;
@@ -202,7 +186,7 @@ EXPLORER_HTML = """
                     data.results.forEach(res => {
                         var link = document.createElement('a');
                         link.href = `/code/{{ project }}/${res.file}#line-${res.line}`;
-                        link.target = "_blank"; // Open in new tab so we don't lose context
+                        link.target = "_blank"; 
                         link.className = "block p-2 hover:bg-gray-700 rounded border border-transparent hover:border-gray-600 transition";
                         link.innerHTML = `<div class="text-blue-300 font-bold">${res.file}:${res.line}</div><div class="text-gray-500 truncate italic">${res.context}</div>`;
                         list.appendChild(link);
@@ -213,10 +197,7 @@ EXPLORER_HTML = """
                 list.innerHTML = '<div class="text-red-500">Error searching.</div>';
             });
     }
-
-    function closeModal() {
-        document.getElementById('defModal').classList.add('hidden');
-    }
+    function closeModal() { document.getElementById('defModal').classList.add('hidden'); }
 </script>
 """
 
@@ -318,21 +299,33 @@ def build_page(name):
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name))
 
-# --- NEW: SYMBOL SEARCH API ---
+# --- OPTIMIZED SEARCH API ---
 @app.route('/search_def/<project>/<symbol>')
 def search_definition(project, symbol):
     root_path, _ = get_config(project)
     if not root_path: return jsonify({'results': []})
     
+    # --- PERFORMANCE FIX: Explicitly target valid source folders ---
     search_paths = []
-    meta_qcom = os.path.join(root_path, "meta-qcom")
-    kernel_src = os.path.join(root_path, "build/tmp/work-shared") 
     
-    if os.path.exists(meta_qcom): search_paths.append(meta_qcom)
-    if os.path.exists(kernel_src): search_paths.append(kernel_src)
-    if not search_paths: search_paths.append(root_path) 
+    # 1. Meta Layers (Fast text files)
+    if os.path.exists(os.path.join(root_path, "meta-qcom")):
+        search_paths.append(os.path.join(root_path, "meta-qcom"))
     
+    # 2. Kernel Source (Dynamic Discovery: build/tmp/work-shared/*/kernel-source)
+    # This avoids scanning the ENTIRE build dir which contains gigabytes of binaries.
+    kernel_glob_path = os.path.join(root_path, "build/tmp/work-shared/*/kernel-source")
+    found_kernels = glob.glob(kernel_glob_path)
+    if found_kernels:
+        search_paths.extend(found_kernels)
+    
+    if not search_paths: 
+        # Fallback only if nothing else found, but be careful
+        search_paths.append(os.path.join(root_path, "meta-qcom"))
+
     results = []
+    
+    # 1. High Priority: Definition
     grep_cmd = [
         "grep", "-rnI", 
         "--include=*.c", "--include=*.h", "--include=*.cpp", "--include=*.dts", "--include=*.dtsi",
@@ -349,6 +342,7 @@ def search_definition(project, symbol):
                 results.append({'file': rel_path, 'line': parts[1], 'context': parts[2].strip()[:100]})
     except: pass
 
+    # 2. Low Priority: Usage
     if not results:
         grep_cmd_loose = [
              "grep", "-rnI", "--include=*.c", "--include=*.h", "-E", f"^{symbol}\\(", *search_paths
