@@ -66,13 +66,13 @@ def background_delete(path, name):
     try: shutil.rmtree(path)
     except: pass
 
-# --- HTML TEMPLATES (Same as V10) ---
+# --- HTML TEMPLATES ---
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Q-Build Manager V11</title>
+    <title>Q-Build V12 DevKit</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -90,7 +90,7 @@ BASE_HTML = """
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
     <nav class="bg-gray-800 p-4 border-b border-gray-700">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-orange-400">FAST</span></a>
+            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-red-500 font-bold">DEV-KIT</span></a>
             <div class="flex items-center space-x-6">
                 <div class="flex items-center space-x-2 text-sm">
                     <i class="fas fa-hdd text-gray-400"></i>
@@ -202,7 +202,103 @@ EXPLORER_HTML = """
 """
 
 DASHBOARD_HTML = """<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{% for name, path in projects.items() %}{% if states.get(name, {}).get('status') != 'deleting' %}<div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative group"><h3 class="text-xl font-bold mb-1">{{ name }}</h3><p class="text-gray-400 text-xs mb-4 truncate">{{ path }}</p><div class="flex justify-between items-center mt-4"><div class="flex space-x-2"><a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-2 rounded text-white text-sm" title="Build Console"><i class="fas fa-hammer"></i> Build</a><a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-white text-sm" title="Source Code"><i class="fas fa-code"></i></a></div><a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }} permanently?')"><i class="fas fa-trash"></i></a></div><div class="absolute top-4 right-4 h-3 w-3 rounded-full {{ 'bg-yellow-500 animate-pulse' if states.get(name, {}).get('status') == 'running' else 'bg-green-500' if states.get(name, {}).get('status') == 'done' else 'bg-gray-600' }}"></div></div>{% endif %}{% else %}<div class="col-span-3 text-center py-20 text-gray-500"><p>No projects found.</p></div>{% endfor %}</div>"""
-BUILD_CONSOLE_HTML = """<div class="flex flex-col h-full space-y-4"><div class="bg-gray-800 p-4 rounded-lg shadow flex justify-between items-center"><div><h2 class="text-2xl font-bold">{{ project }}</h2><div class="text-sm text-gray-400 mt-1">Status: <span id="statusBadge" class="font-bold">UNKNOWN</span></div></div><div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl"><label class="text-sm text-gray-400 font-bold mr-2">Topology:</label><label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label><label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AudioReach</span></label></div><div class="flex space-x-3 items-center"><a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Browse Code</a><button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button><button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Start Build</button><a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a></div></div><div id="terminal" class="flex-grow bg-black rounded h-[600px]"></div></div><script>var socket = io(); var project = '{{ project }}'; var term = new Terminal({theme:{background:'#000',foreground:'#e5e5e5'}}); var fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(document.getElementById('terminal')); fitAddon.fit(); socket.on('connect', function() { socket.emit('join_project', {project: project}); }); socket.on('log_chunk', function(msg){ term.write(msg.data); }); socket.on('build_status', function(msg){ updateUI(msg.status); }); function updateUI(status){ var b=document.getElementById('buildBtn'); var s=document.getElementById('stopBtn'); var t=document.getElementById('topoControl'); document.getElementById('statusBadge').innerText=status.toUpperCase(); if(status=='running'){b.classList.add('hidden'); s.classList.remove('hidden'); t.classList.add('opacity-50', 'pointer-events-none');} else {b.classList.remove('hidden'); s.classList.add('hidden'); t.classList.remove('opacity-50', 'pointer-events-none');}} function startBuild(){ term.clear(); var topo = document.querySelector('input[name="topo"]:checked').value; socket.emit('start_build',{project:project, topology: topo}); } function stopBuild(){ socket.emit('stop_build',{project:project}); }</script>"""
+
+# --- NEW BUILD CONSOLE WITH DEVTOOL PANEL ---
+BUILD_CONSOLE_HTML = """
+<div class="flex flex-col h-full space-y-4">
+    <!-- Header -->
+    <div class="bg-gray-800 p-4 rounded-lg shadow flex justify-between items-center">
+        <div>
+            <h2 class="text-2xl font-bold">{{ project }}</h2>
+            <div class="text-sm text-gray-400 mt-1">Status: <span id="statusBadge" class="font-bold">UNKNOWN</span></div>
+        </div>
+        
+        <!-- Topology Control -->
+        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl">
+            <label class="text-sm text-gray-400 font-bold mr-2">Topology:</label>
+            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label>
+            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AudioReach</span></label>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex space-x-3 items-center">
+            <a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Browse Code</a>
+            <button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button>
+            <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Start Build</button>
+            <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
+        </div>
+    </div>
+    
+    <!-- Devtool Panel -->
+    <div class="bg-gray-800 p-4 rounded-lg shadow border-l-4 border-yellow-500">
+        <h3 class="text-lg font-bold mb-2 text-yellow-500"><i class="fas fa-tools mr-2"></i>Kernel Dev Kit</h3>
+        <div class="flex items-center space-x-4">
+            <div class="flex-grow">
+                <label class="text-xs text-gray-400 uppercase">Recipe Name</label>
+                <input type="text" id="recipeName" value="linux-qcom-next" list="common_recipes" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white font-mono">
+                <datalist id="common_recipes">
+                    <option value="linux-qcom-next">
+                    <option value="qcom-audio-hal-plugins">
+                    <option value="qcom-display-hal">
+                </datalist>
+            </div>
+            <button onclick="runDevtool('modify')" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm h-10 mt-5"><i class="fas fa-edit mr-1"></i> Modify Source</button>
+            <button onclick="runDevtool('reset')" class="bg-red-900 hover:bg-red-800 text-white px-4 py-2 rounded text-sm h-10 mt-5"><i class="fas fa-undo mr-1"></i> Reset Source</button>
+        </div>
+        <div class="text-xs text-gray-500 mt-2">
+            <i class="fas fa-info-circle"></i> 'Modify' downloads source to <code>build/workspace/sources/</code> for editing. 'Reset' reverts to upstream.
+        </div>
+    </div>
+
+    <!-- Terminal -->
+    <div id="terminal" class="flex-grow bg-black rounded h-[500px]"></div>
+</div>
+
+<script>
+    var socket = io(); 
+    var project = '{{ project }}'; 
+    var term = new Terminal({theme:{background:'#000',foreground:'#e5e5e5'}}); 
+    var fitAddon = new FitAddon.FitAddon(); 
+    term.loadAddon(fitAddon); 
+    term.open(document.getElementById('terminal')); 
+    fitAddon.fit(); 
+
+    socket.on('connect', function() { socket.emit('join_project', {project: project}); });
+    socket.on('log_chunk', function(msg){ term.write(msg.data); });
+    socket.on('build_status', function(msg){ updateUI(msg.status); });
+
+    function updateUI(status){ 
+        var b=document.getElementById('buildBtn'); 
+        var s=document.getElementById('stopBtn'); 
+        var t=document.getElementById('topoControl'); 
+        document.getElementById('statusBadge').innerText=status.toUpperCase(); 
+        if(status=='running'){
+            b.classList.add('hidden'); s.classList.remove('hidden'); t.classList.add('opacity-50', 'pointer-events-none');
+        } else {
+            b.classList.remove('hidden'); s.classList.add('hidden'); t.classList.remove('opacity-50', 'pointer-events-none');
+        }
+    } 
+
+    function startBuild(){ 
+        term.clear(); 
+        var topo = document.querySelector('input[name="topo"]:checked').value; 
+        socket.emit('start_build',{project:project, topology: topo}); 
+    } 
+
+    function stopBuild(){ 
+        socket.emit('stop_build',{project:project}); 
+    }
+
+    function runDevtool(action) {
+        var recipe = document.getElementById('recipeName').value;
+        if(!recipe) { alert("Please enter a recipe name"); return; }
+        if(confirm("Run devtool " + action + " on " + recipe + "?")) {
+            term.clear();
+            socket.emit('devtool_action', {project: project, action: action, recipe: recipe});
+        }
+    }
+</script>
+"""
 CREATE_STEP1_HTML = """<div class="max-w-xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 1: Project Name</h2><form action="/create_step2" method="POST" class="space-y-4" onsubmit="document.getElementById('btn').innerHTML='<i class=\'fas fa-spinner fa-spin\'></i> Cloning...';"><div><label class="block text-sm text-gray-400 mb-1">Project Name</label><input type="text" name="name" required class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white"></div><button id="btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold mt-4">Next <i class="fas fa-arrow-right ml-2"></i></button></form></div>"""
 CREATE_STEP2_HTML = """<div class="max-w-2xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 2: Configuration</h2><form action="/finish_create" method="POST" class="space-y-6"><input type="hidden" name="name" value="{{ project }}"><div><label class="block text-sm text-gray-400 mb-1">Target Board</label><select name="board" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white">{% for b in boards %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div><button type="submit" class="w-full bg-green-600 hover:bg-green-500 py-3 rounded font-bold mt-4">Create Project</button></form></div>"""
 
@@ -299,33 +395,39 @@ def build_page(name):
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name))
 
-# --- OPTIMIZED SEARCH API ---
+# --- OPTIMIZED SEARCH WITH DEVTOOL SUPPORT ---
 @app.route('/search_def/<project>/<symbol>')
 def search_definition(project, symbol):
     root_path, _ = get_config(project)
     if not root_path: return jsonify({'results': []})
     
-    # --- PERFORMANCE FIX: Explicitly target valid source folders ---
     search_paths = []
     
-    # 1. Meta Layers (Fast text files)
+    # 1. Devtool Workspace Sources (Highest Priority - Editable User Code)
+    devtool_src = os.path.join(root_path, "build/workspace/sources")
+    if os.path.exists(devtool_src):
+        # Scan all subdirectories in workspace/sources
+        for item in os.listdir(devtool_src):
+            p = os.path.join(devtool_src, item)
+            if os.path.isdir(p): search_paths.append(p)
+
+    # 2. Meta Layers
     if os.path.exists(os.path.join(root_path, "meta-qcom")):
         search_paths.append(os.path.join(root_path, "meta-qcom"))
     
-    # 2. Kernel Source (Dynamic Discovery: build/tmp/work-shared/*/kernel-source)
-    # This avoids scanning the ENTIRE build dir which contains gigabytes of binaries.
+    # 3. Standard Kernel (Dynamic Discovery) - Only if not overridden by devtool
+    # But for search, it's safer to include both so user sees difference
     kernel_glob_path = os.path.join(root_path, "build/tmp/work-shared/*/kernel-source")
     found_kernels = glob.glob(kernel_glob_path)
     if found_kernels:
         search_paths.extend(found_kernels)
     
     if not search_paths: 
-        # Fallback only if nothing else found, but be careful
         search_paths.append(os.path.join(root_path, "meta-qcom"))
 
     results = []
     
-    # 1. High Priority: Definition
+    # Grep Command
     grep_cmd = [
         "grep", "-rnI", 
         "--include=*.c", "--include=*.h", "--include=*.cpp", "--include=*.dts", "--include=*.dtsi",
@@ -342,7 +444,6 @@ def search_definition(project, symbol):
                 results.append({'file': rel_path, 'line': parts[1], 'context': parts[2].strip()[:100]})
     except: pass
 
-    # 2. Low Priority: Usage
     if not results:
         grep_cmd_loose = [
              "grep", "-rnI", "--include=*.c", "--include=*.h", "-E", f"^{symbol}\\(", *search_paths
@@ -368,6 +469,29 @@ def handle_join(data):
             emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
         emit('build_status', {'status': BUILD_STATES[name].get('status', 'unknown')})
 
+def run_build_task(cmd, name):
+    BUILD_STATES[name] = {'status': 'running', 'logs': [], 'pid': None}
+    socketio.emit('build_status', {'status': 'running'}, to=name)
+    path, _ = get_config(name)
+    
+    master, slave = pty.openpty()
+    p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
+    os.close(slave)
+    BUILD_STATES[name]['pid'] = p.pid
+
+    while True:
+        try:
+            data = os.read(master, 1024)
+            if not data: break
+            d = data.decode(errors='ignore')
+            BUILD_STATES[name]['logs'].append(d)
+            socketio.emit('log_chunk', {'data': d}, to=name)
+        except: break
+    p.wait()
+    final_status = 'done' if p.returncode == 0 else 'failed'
+    BUILD_STATES[name]['status'] = final_status
+    socketio.emit('build_status', {'status': final_status}, to=name)
+
 @socketio.on('start_build')
 def handle_build(data):
     name = data['project']
@@ -379,29 +503,23 @@ def handle_build(data):
     distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
     kas_args = f"{cfg.get('kas_files')}:{distro}"
     cmd = f"kas shell {kas_args} -c 'bitbake {cfg.get('image')}'"
-
-    BUILD_STATES[name] = {'status': 'running', 'logs': [], 'pid': None}
-    emit('build_status', {'status': 'running'}, to=name)
     
-    master, slave = pty.openpty()
-    p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
-    os.close(slave)
-    BUILD_STATES[name]['pid'] = p.pid
+    threading.Thread(target=run_build_task, args=(cmd, name)).start()
 
-    def read_output():
-        while True:
-            try:
-                data = os.read(master, 1024)
-                if not data: break
-                d = data.decode(errors='ignore')
-                BUILD_STATES[name]['logs'].append(d)
-                socketio.emit('log_chunk', {'data': d}, to=name)
-            except: break
-        p.wait()
-        final_status = 'done' if p.returncode == 0 else 'failed'
-        BUILD_STATES[name]['status'] = final_status
-        socketio.emit('build_status', {'status': final_status}, to=name)
-    threading.Thread(target=read_output).start()
+@socketio.on('devtool_action')
+def handle_devtool(data):
+    name = data['project']
+    action = data['action'] # modify or reset
+    recipe = data['recipe']
+    path, cfg = get_config(name)
+    
+    # Reuse previous topo selection or default to ASOC
+    topo = cfg.get('topology', 'ASOC')
+    distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
+    kas_args = f"{cfg.get('kas_files')}:{distro}"
+    
+    cmd = f"kas shell {kas_args} -c 'devtool {action} {recipe}'"
+    threading.Thread(target=run_build_task, args=(cmd, name)).start()
 
 @socketio.on('stop_build')
 def handle_stop(data):
