@@ -6,14 +6,12 @@ import pty
 import threading
 import signal
 import shutil
-import re
 import time
 from flask import Flask, render_template_string, request, redirect, abort
 from flask_socketio import SocketIO, emit, join_room
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
-# async_mode='threading' ensures compatibility with standard subprocesses without needing eventlet/gevent
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 SERVER_PORT = int(os.environ.get("WEB_PORT", 5000))
@@ -22,54 +20,49 @@ REGISTRY_FILE = os.path.join(WORK_DIR, "projects_registry.yaml")
 BUILD_DIR_BASE = os.path.join(WORK_DIR, "meta-qcom-builds")
 BUILD_STATES = {}
 
-# --- CORE LOGIC ---
+# --- HELPERS ---
+def get_disk_usage():
+    try:
+        total, used, free = shutil.disk_usage(WORK_DIR)
+        return int((used / total) * 100), int(free // (2**30))
+    except: return 0, 0
 
 def sync_registry():
-    """Scans disk for projects missing from registry.yaml and adds them."""
-    if not os.path.exists(REGISTRY_FILE):
-        reg = {}
+    if not os.path.exists(REGISTRY_FILE): reg = {}
     else:
-        with open(REGISTRY_FILE, "r") as f: 
-            reg = yaml.safe_load(f) or {}
-
-    # Scan disk
-    if not os.path.exists(BUILD_DIR_BASE):
-        os.makedirs(BUILD_DIR_BASE, exist_ok=True)
-        
-    found_projects = [d for d in os.listdir(BUILD_DIR_BASE) if os.path.isdir(os.path.join(BUILD_DIR_BASE, d))]
+        with open(REGISTRY_FILE, "r") as f: reg = yaml.safe_load(f) or {}
     
+    if not os.path.exists(BUILD_DIR_BASE): os.makedirs(BUILD_DIR_BASE, exist_ok=True)
+    
+    # Add missing
+    found = [d for d in os.listdir(BUILD_DIR_BASE) if os.path.isdir(os.path.join(BUILD_DIR_BASE, d))]
     updated = False
-    for proj in found_projects:
-        if proj not in reg:
-            reg[proj] = os.path.join(BUILD_DIR_BASE, proj)
-            updated = True
+    for p in found:
+        if p not in reg: reg[p] = os.path.join(BUILD_DIR_BASE, p); updated = True
+    
+    # Remove deleted (unless currently deleting in bg)
+    for n, p in list(reg.items()):
+        if not os.path.exists(p) and BUILD_STATES.get(n,{}).get('status') != 'deleting':
+            del reg[n]; updated = True
             
-    # Clean up stale entries (registry points to non-existent folder)
-    # create a list to avoid runtime error during deletion
-    for name, path in list(reg.items()):
-        if not os.path.exists(path):
-            del reg[name]
-            updated = True
-
     if updated:
-        with open(REGISTRY_FILE, "w") as f: 
-            yaml.dump(reg, f)
-            
+        with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
     return reg
 
 def get_config(project_name):
-    reg = sync_registry() # Always sync before reading
+    reg = sync_registry()
     path = reg.get(project_name)
     if not path: return None, None
     cfg_path = os.path.join(path, "config.yaml")
     if os.path.exists(cfg_path):
         with open(cfg_path) as f: return path, yaml.safe_load(f)
-    # Default config if missing
     return path, {}
 
-def get_disk_usage():
-    total, used, free = shutil.disk_usage(WORK_DIR)
-    return int((used / total) * 100), int(free // (2**30))
+def background_delete(path, name):
+    print(f"Starting background delete for {name}...")
+    try: shutil.rmtree(path)
+    except Exception as e: print(f"Delete error: {e}")
+    print(f"Finished deleting {name}")
 
 # --- HTML TEMPLATES ---
 BASE_HTML = """
@@ -77,7 +70,7 @@ BASE_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Q-Build Manager V7</title>
+    <title>Q-Build Manager V8</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -91,7 +84,7 @@ BASE_HTML = """
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
     <nav class="bg-gray-800 p-4 border-b border-gray-700">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-orange-400">DEV</span></a>
+            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-pink-400">PRO</span></a>
             <div class="flex items-center space-x-6">
                 <div class="flex items-center space-x-2 text-sm">
                     <i class="fas fa-hdd text-gray-400"></i>
@@ -111,34 +104,25 @@ BASE_HTML = """
 DASHBOARD_HTML = """
 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {% for name, path in projects.items() %}
+    {% if states.get(name, {}).get('status') != 'deleting' %}
     <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative group">
         <h3 class="text-xl font-bold mb-1">{{ name }}</h3>
         <p class="text-gray-400 text-xs mb-4 truncate">{{ path }}</p>
-        
         <div class="flex justify-between items-center mt-4">
-             {% if states.get(name, {}).get('status') == 'running' %}
-                 <a href="/build/{{ name }}" class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-white text-sm w-full text-center animate-pulse"><i class="fas fa-cog fa-spin mr-1"></i> Building...</a>
-             {% else %}
-                 <div class="flex space-x-2">
-                    <a href="/build/{{ name }}" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded text-white text-sm" title="Build Console"><i class="fas fa-hammer"></i></a>
-                    <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-white text-sm" title="Source Code"><i class="fas fa-code"></i></a>
-                 </div>
-                 <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }} permanently?')"><i class="fas fa-trash"></i></a>
-             {% endif %}
+             <div class="flex space-x-2">
+                <a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-2 rounded text-white text-sm" title="Build Console"><i class="fas fa-hammer"></i> Build</a>
+                <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-white text-sm" title="Source Code"><i class="fas fa-code"></i></a>
+             </div>
+             <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }} permanently?')"><i class="fas fa-trash"></i></a>
         </div>
-        <!-- Status Indicator Dot -->
-        <div class="absolute top-4 right-4 h-3 w-3 rounded-full {{ 'bg-green-500' if states.get(name, {}).get('status') == 'done' else 'bg-red-500' if states.get(name, {}).get('status') == 'failed' else 'bg-gray-600' }}"></div>
+        <div class="absolute top-4 right-4 h-3 w-3 rounded-full {{ 'bg-yellow-500 animate-pulse' if states.get(name, {}).get('status') == 'running' else 'bg-green-500' if states.get(name, {}).get('status') == 'done' else 'bg-gray-600' }}"></div>
     </div>
+    {% endif %}
     {% else %}
-    <div class="col-span-3 text-center py-20 text-gray-500"><p>No projects found in {{ build_dir }}.</p></div>
+    <div class="col-span-3 text-center py-20 text-gray-500"><p>No projects found.</p></div>
     {% endfor %}
 </div>
 """
-
-# Reusing Explorer & Wizard Templates (Standard V6)
-EXPLORER_HTML = """<div class="flex h-[80vh] bg-gray-800 rounded-lg shadow-lg overflow-hidden border border-gray-700"><div class="w-1/4 bg-gray-900 border-r border-gray-700 flex flex-col"><div class="p-3 border-b border-gray-700 bg-gray-800 font-bold flex justify-between"><span>{{ project }}</span><a href="/" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></a></div><div class="overflow-y-auto flex-grow p-2 text-sm font-mono">{% if parent_dir %}<a href="/code/{{ project }}/{{ parent_dir }}" class="block p-1 text-yellow-400 hover:bg-gray-800"><i class="fas fa-level-up-alt mr-2"></i>..</a>{% endif %}{% for d in dirs %}<a href="/code/{{ project }}/{{ current_path }}/{{ d }}" class="block p-1 text-blue-400 hover:bg-gray-800 truncate"><i class="fas fa-folder mr-2"></i>{{ d }}</a>{% endfor %}{% for f in files %}<a href="/code/{{ project }}/{{ current_path }}/{{ f }}" class="block p-1 text-gray-300 hover:bg-gray-800 truncate"><i class="far fa-file mr-2"></i>{{ f }}</a>{% endfor %}</div></div><div class="w-3/4 flex flex-col bg-[#282c34]"><div class="p-2 bg-gray-800 border-b border-gray-700 text-xs text-gray-400 flex justify-between"><span>{{ current_path }}</span><span>{{ file_size }}</span></div><div class="flex-grow overflow-auto p-4">{% if is_file %}<pre><code class="language-{{ ext }}">{{ content }}</code></pre>{% else %}<div class="flex items-center justify-center h-full text-gray-500"><div class="text-center"><i class="fas fa-code text-6xl mb-4 opacity-20"></i><p>Select a file</p></div></div>{% endif %}</div></div></div>"""
-CREATE_STEP1_HTML = """<div class="max-w-xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 1: Project Name</h2><form action="/create_step2" method="POST" class="space-y-4" onsubmit="document.getElementById('btn').innerHTML='<i class=\'fas fa-spinner fa-spin\'></i> Cloning...';"><div><label class="block text-sm text-gray-400 mb-1">Project Name</label><input type="text" name="name" required class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white"></div><button id="btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold mt-4">Next <i class="fas fa-arrow-right ml-2"></i></button></form></div>"""
-CREATE_STEP2_HTML = """<div class="max-w-2xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 2: Configuration</h2><form action="/finish_create" method="POST" class="space-y-6"><input type="hidden" name="name" value="{{ project }}"><div><label class="block text-sm text-gray-400 mb-1">Target Board</label><select name="board" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white">{% for b in boards %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div><div><label class="block text-sm text-gray-400 mb-1">Topology</label><div class="flex space-x-4"><label class="flex items-center space-x-2 bg-gray-900 p-3 rounded border border-gray-600 flex-1"><input type="radio" name="topology" value="ASOC" checked> <span>ASOC (Standard)</span></label><label class="flex items-center space-x-2 bg-gray-900 p-3 rounded border border-gray-600 flex-1"><input type="radio" name="topology" value="AudioReach"> <span>AudioReach</span></label></div></div><button type="submit" class="w-full bg-green-600 hover:bg-green-500 py-3 rounded font-bold mt-4">Create Project</button></form></div>"""
 
 BUILD_CONSOLE_HTML = """
 <div class="flex flex-col h-full space-y-4">
@@ -146,11 +130,24 @@ BUILD_CONSOLE_HTML = """
         <div>
             <h2 class="text-2xl font-bold">{{ project }}</h2>
             <div class="text-sm text-gray-400 mt-1">Status: <span id="statusBadge" class="font-bold">UNKNOWN</span></div>
-            <div class="text-xs text-gray-500 font-mono" id="cmdInfo"></div>
         </div>
+        <!-- Topology Switcher -->
+        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl">
+            <label class="text-sm text-gray-400 font-bold mr-2">Topology:</label>
+            <label class="inline-flex items-center cursor-pointer">
+                <input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked>
+                <span class="ml-2 text-sm">ASOC</span>
+            </label>
+            <label class="inline-flex items-center cursor-pointer">
+                <input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600">
+                <span class="ml-2 text-sm">AudioReach</span>
+            </label>
+        </div>
+
         <div class="flex space-x-3 items-center">
+            <a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Browse Code</a>
             <button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button>
-            <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded">BUILD</button>
+            <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Start Build</button>
             <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
         </div>
     </div>
@@ -165,43 +162,53 @@ BUILD_CONSOLE_HTML = """
     term.open(document.getElementById('terminal')); 
     fitAddon.fit(); 
 
-    socket.on('connect', function() {
-        console.log("Connected to server");
-        socket.emit('join_project', {project: project});
-    });
-
+    socket.on('connect', function() { socket.emit('join_project', {project: project}); });
     socket.on('log_chunk', function(msg){ term.write(msg.data); });
-    socket.on('build_status', function(msg){ 
-        console.log("Status update:", msg.status);
-        updateUI(msg.status); 
-    });
-    socket.on('cmd_info', function(msg){ document.getElementById('cmdInfo').innerText = msg.cmd; });
+    socket.on('build_status', function(msg){ updateUI(msg.status); });
 
     function updateUI(status){ 
         var b=document.getElementById('buildBtn'); 
-        var s=document.getElementById('stopBtn'); 
+        var s=document.getElementById('stopBtn');
+        var t=document.getElementById('topoControl');
         document.getElementById('statusBadge').innerText=status.toUpperCase(); 
+        
         if(status=='running'){
-            b.classList.add('hidden'); s.classList.remove('hidden');
+            b.classList.add('hidden'); 
+            s.classList.remove('hidden');
+            t.classList.add('opacity-50', 'pointer-events-none'); // Disable topology switch while running
         } else {
-            b.classList.remove('hidden'); s.classList.add('hidden');
+            b.classList.remove('hidden'); 
+            s.classList.add('hidden');
+            t.classList.remove('opacity-50', 'pointer-events-none');
         }
     }
-    function startBuild(){ term.clear(); socket.emit('start_build',{project:project}); }
+
+    function startBuild(){ 
+        term.clear(); 
+        // Get selected Topology
+        var topo = document.querySelector('input[name="topo"]:checked').value;
+        socket.emit('start_build',{project:project, topology: topo}); 
+    }
+    
     function stopBuild(){ socket.emit('stop_build',{project:project}); }
 </script>
 """
 
+EXPLORER_HTML = """<div class="flex h-[80vh] bg-gray-800 rounded-lg shadow-lg overflow-hidden border border-gray-700"><div class="w-1/4 bg-gray-900 border-r border-gray-700 flex flex-col"><div class="p-3 border-b border-gray-700 bg-gray-800 font-bold flex justify-between"><span>{{ project }}</span><a href="/" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></a></div><div class="overflow-y-auto flex-grow p-2 text-sm font-mono">{% if parent_dir %}<a href="/code/{{ project }}/{{ parent_dir }}" class="block p-1 text-yellow-400 hover:bg-gray-800"><i class="fas fa-level-up-alt mr-2"></i>..</a>{% endif %}{% for d in dirs %}<a href="/code/{{ project }}/{{ current_path }}/{{ d }}" class="block p-1 text-blue-400 hover:bg-gray-800 truncate"><i class="fas fa-folder mr-2"></i>{{ d }}</a>{% endfor %}{% for f in files %}<a href="/code/{{ project }}/{{ current_path }}/{{ f }}" class="block p-1 text-gray-300 hover:bg-gray-800 truncate"><i class="far fa-file mr-2"></i>{{ f }}</a>{% endfor %}</div></div><div class="w-3/4 flex flex-col bg-[#282c34]"><div class="p-2 bg-gray-800 border-b border-gray-700 text-xs text-gray-400 flex justify-between"><span>{{ current_path }}</span><span>{{ file_size }}</span></div><div class="flex-grow overflow-auto p-4">{% if is_file %}<pre><code class="language-{{ ext }}">{{ content }}</code></pre>{% else %}<div class="flex items-center justify-center h-full text-gray-500"><div class="text-center"><i class="fas fa-code text-6xl mb-4 opacity-20"></i><p>Select a file</p></div></div>{% endif %}</div></div></div>"""
+CREATE_STEP1_HTML = """<div class="max-w-xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 1: Project Name</h2><form action="/create_step2" method="POST" class="space-y-4" onsubmit="document.getElementById('btn').innerHTML='<i class=\'fas fa-spinner fa-spin\'></i> Cloning...';"><div><label class="block text-sm text-gray-400 mb-1">Project Name</label><input type="text" name="name" required class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white"></div><button id="btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold mt-4">Next <i class="fas fa-arrow-right ml-2"></i></button></form></div>"""
+CREATE_STEP2_HTML = """<div class="max-w-2xl mx-auto bg-gray-800 p-8 rounded-lg shadow-lg"><h2 class="text-2xl font-bold mb-6">Step 2: Configuration</h2><form action="/finish_create" method="POST" class="space-y-6"><input type="hidden" name="name" value="{{ project }}"><div><label class="block text-sm text-gray-400 mb-1">Target Board</label><select name="board" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white">{% for b in boards %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div><div class="bg-gray-900 p-4 rounded text-sm text-gray-400">Note: Topology can be changed later in the build menu.</div><button type="submit" class="w-full bg-green-600 hover:bg-green-500 py-3 rounded font-bold mt-4">Create Project</button></form></div>"""
+
 # --- ROUTES ---
 @app.route('/')
 def index():
-    reg = sync_registry() # AUTO-SYNC HERE
+    reg = sync_registry()
     pct, free = get_disk_usage()
-    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(DASHBOARD_HTML, projects=reg, states=BUILD_STATES, build_dir=BUILD_DIR_BASE))
+    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(DASHBOARD_HTML, projects=reg, states=BUILD_STATES))
 
 @app.route('/create')
 def create_step1_view():
-    return render_template_string(BASE_HTML, disk_pct=0, disk_free=0, body_content=CREATE_STEP1_HTML)
+    pct, free = get_disk_usage()
+    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=CREATE_STEP1_HTML)
 
 @app.route('/create_step2', methods=['POST'])
 def create_step2_action():
@@ -213,15 +220,15 @@ def create_step2_action():
     ci_path = os.path.join(repo_path, "ci")
     boards = [f for f in os.listdir(ci_path) if f.endswith('.yml')] if os.path.exists(ci_path) else []
     boards.sort()
-    return render_template_string(BASE_HTML, disk_pct=0, disk_free=0, body_content=render_template_string(CREATE_STEP2_HTML, project=name, boards=boards))
+    pct, free = get_disk_usage()
+    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(CREATE_STEP2_HTML, project=name, boards=boards))
 
 @app.route('/finish_create', methods=['POST'])
 def finish_create():
-    name = request.form['name']; board = request.form['board']; topo = request.form['topology']
+    name = request.form['name']; board = request.form['board']
     proj_path = os.path.join(BUILD_DIR_BASE, name)
-    cfg = {"kas_files": f"meta-qcom/ci/{board}", "image": "qcom-multimedia-image", "topology": topo}
+    cfg = {"kas_files": f"meta-qcom/ci/{board}", "image": "qcom-multimedia-image"}
     with open(os.path.join(proj_path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
-    # No need to manually update registry; sync_registry() does it on next load
     return redirect('/')
 
 @app.route('/delete/<name>')
@@ -229,9 +236,14 @@ def delete(name):
     reg = sync_registry()
     if name in reg:
         path = reg[name]
-        try: shutil.rmtree(path)
-        except: pass
-        # Sync will clean up the entry on next load
+        BUILD_STATES[name] = {'status': 'deleting'} # Mark as deleting in UI
+        # Run delete in background thread
+        threading.Thread(target=background_delete, args=(path, name)).start()
+        
+        # Remove from registry immediately for UX
+        del reg[name]
+        with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
+        
     return redirect('/')
 
 @app.route('/code/<name>/', defaults={'req_path': ''})
@@ -243,6 +255,8 @@ def code_explorer(name, req_path):
     abs_req = os.path.abspath(os.path.join(abs_root, req_path))
     if not abs_req.startswith(abs_root): return abort(403)
     
+    pct, free = get_disk_usage() # FIX: Memory now shows correctly
+    
     if os.path.isdir(abs_req):
         try: items = sorted(os.listdir(abs_req))
         except: items = []
@@ -251,7 +265,7 @@ def code_explorer(name, req_path):
         parent = os.path.relpath(os.path.dirname(abs_req), abs_root)
         if parent == '.': parent = ''
         if req_path == '': parent = None
-        return render_template_string(BASE_HTML, disk_pct=0, disk_free=0, body_content=render_template_string(EXPLORER_HTML, project=name, current_path=req_path, dirs=dirs, files=files, parent_dir=parent, is_file=False))
+        return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(EXPLORER_HTML, project=name, current_path=req_path, dirs=dirs, files=files, parent_dir=parent, is_file=False))
     elif os.path.isfile(abs_req):
         try:
             with open(abs_req, 'r', errors='replace') as f: content = f.read(100000)
@@ -268,35 +282,40 @@ def code_explorer(name, req_path):
         files = [i for i in items if os.path.isfile(os.path.join(parent_dir_abs, i)) and not i.startswith('.')]
         rel_parent = os.path.relpath(parent_dir_abs, abs_root)
         if rel_parent == '.': rel_parent = ''
-        return render_template_string(BASE_HTML, disk_pct=0, disk_free=0, body_content=render_template_string(EXPLORER_HTML, project=name, current_path=rel_parent, dirs=dirs, files=files, parent_dir=os.path.dirname(rel_parent) if rel_parent else None, is_file=True, content=content, ext=ext, file_size=f"{os.path.getsize(abs_req)} bytes"))
+        return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(EXPLORER_HTML, project=name, current_path=rel_parent, dirs=dirs, files=files, parent_dir=os.path.dirname(rel_parent) if rel_parent else None, is_file=True, content=content, ext=ext, file_size=f"{os.path.getsize(abs_req)} bytes"))
     return abort(404)
 
 @app.route('/build/<name>')
-def build_page(name): return render_template_string(BASE_HTML, disk_pct=0, disk_free=0, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name))
+def build_page(name): 
+    pct, free = get_disk_usage() # FIX: Memory now shows correctly
+    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name))
 
-# --- SOCKET & BUILD LOGIC ---
+# --- SOCKET ---
 @socketio.on('join_project')
 def handle_join(data):
     join_room(data['project'])
     name = data['project']
     if name in BUILD_STATES: 
-        emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
-        emit('build_status', {'status': BUILD_STATES[name]['status']})
+        if 'logs' in BUILD_STATES[name]:
+            emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
+        emit('build_status', {'status': BUILD_STATES[name].get('status', 'unknown')})
 
 @socketio.on('start_build')
 def handle_build(data):
     name = data['project']
+    topo = data.get('topology', 'ASOC') # Get Dynamic Topology from UI
     path, cfg = get_config(name)
     
-    # KAS/Bitbake Command
-    topo = cfg.get('topology', 'ASOC')
+    # Save selection back to config so it persists for next time
+    cfg['topology'] = topo
+    with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
+    
     distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
     kas_args = f"{cfg.get('kas_files')}:{distro}"
     cmd = f"kas shell {kas_args} -c 'bitbake {cfg.get('image')}'"
 
     BUILD_STATES[name] = {'status': 'running', 'logs': [], 'pid': None}
     emit('build_status', {'status': 'running'}, to=name)
-    emit('cmd_info', {'cmd': cmd}, to=name)
     
     master, slave = pty.openpty()
     p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
@@ -306,24 +325,14 @@ def handle_build(data):
     def read_output():
         while True:
             try:
-                # Read chunks from PTY
                 data = os.read(master, 1024)
                 if not data: break
                 d = data.decode(errors='ignore')
                 BUILD_STATES[name]['logs'].append(d)
                 socketio.emit('log_chunk', {'data': d}, to=name)
-            except OSError:
-                break # PTY closed/EIO -> Process finished
-            except Exception as e:
-                print(f"Stream error: {e}")
-                break
-        
-        # Wait for exit code to be sure
+            except: break
         p.wait()
         final_status = 'done' if p.returncode == 0 else 'failed'
-        print(f"Build {name} finished. Exit code: {p.returncode} -> {final_status}")
-        
-        # Update State
         BUILD_STATES[name]['status'] = final_status
         socketio.emit('build_status', {'status': final_status}, to=name)
 
@@ -338,6 +347,4 @@ def handle_stop(data):
     emit('build_status', {'status': 'stopped'}, to=name)
 
 if __name__ == '__main__':
-    # debug=True enables Hot Reloading
-    # use_reloader=True watches for file changes
     socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=True, use_reloader=True, allow_unsafe_werkzeug=True)
