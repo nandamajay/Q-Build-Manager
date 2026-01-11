@@ -21,6 +21,7 @@ WORK_DIR = "/work"
 REGISTRY_FILE = os.path.join(WORK_DIR, "projects_registry.yaml")
 BUILD_DIR_BASE = os.path.join(WORK_DIR, "meta-qcom-builds")
 BUILD_STATES = {}
+RECIPE_CACHE = {}
 
 # --- HELPERS ---
 def get_disk_usage():
@@ -38,13 +39,11 @@ def sync_registry():
     
     if not os.path.exists(BUILD_DIR_BASE): os.makedirs(BUILD_DIR_BASE, exist_ok=True)
     
-    # Add missing
     found = [d for d in os.listdir(BUILD_DIR_BASE) if os.path.isdir(os.path.join(BUILD_DIR_BASE, d))]
     updated = False
     for p in found:
         if p not in reg: reg[p] = os.path.join(BUILD_DIR_BASE, p); updated = True
     
-    # Remove deleted
     for n, p in list(reg.items()):
         if not os.path.exists(p) and BUILD_STATES.get(n,{}).get('status') != 'deleting':
             del reg[n]; updated = True
@@ -72,7 +71,7 @@ BASE_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Q-Build V12 DevKit</title>
+    <title>Q-Build V13 Scanner</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -90,7 +89,7 @@ BASE_HTML = """
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
     <nav class="bg-gray-800 p-4 border-b border-gray-700">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-red-500 font-bold">DEV-KIT</span></a>
+            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-green-400 font-bold">SCANNER</span></a>
             <div class="flex items-center space-x-6">
                 <div class="flex items-center space-x-2 text-sm">
                     <i class="fas fa-hdd text-gray-400"></i>
@@ -203,99 +202,90 @@ EXPLORER_HTML = """
 
 DASHBOARD_HTML = """<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{% for name, path in projects.items() %}{% if states.get(name, {}).get('status') != 'deleting' %}<div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative group"><h3 class="text-xl font-bold mb-1">{{ name }}</h3><p class="text-gray-400 text-xs mb-4 truncate">{{ path }}</p><div class="flex justify-between items-center mt-4"><div class="flex space-x-2"><a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-2 rounded text-white text-sm" title="Build Console"><i class="fas fa-hammer"></i> Build</a><a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-white text-sm" title="Source Code"><i class="fas fa-code"></i></a></div><a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }} permanently?')"><i class="fas fa-trash"></i></a></div><div class="absolute top-4 right-4 h-3 w-3 rounded-full {{ 'bg-yellow-500 animate-pulse' if states.get(name, {}).get('status') == 'running' else 'bg-green-500' if states.get(name, {}).get('status') == 'done' else 'bg-gray-600' }}"></div></div>{% endif %}{% else %}<div class="col-span-3 text-center py-20 text-gray-500"><p>No projects found.</p></div>{% endfor %}</div>"""
 
-# --- NEW BUILD CONSOLE WITH DEVTOOL PANEL ---
 BUILD_CONSOLE_HTML = """
 <div class="flex flex-col h-full space-y-4">
-    <!-- Header -->
     <div class="bg-gray-800 p-4 rounded-lg shadow flex justify-between items-center">
-        <div>
-            <h2 class="text-2xl font-bold">{{ project }}</h2>
-            <div class="text-sm text-gray-400 mt-1">Status: <span id="statusBadge" class="font-bold">UNKNOWN</span></div>
-        </div>
-        
-        <!-- Topology Control -->
-        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl">
-            <label class="text-sm text-gray-400 font-bold mr-2">Topology:</label>
-            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label>
-            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AudioReach</span></label>
-        </div>
-
-        <!-- Controls -->
-        <div class="flex space-x-3 items-center">
-            <a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Browse Code</a>
-            <button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button>
-            <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Start Build</button>
-            <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
-        </div>
+        <div><h2 class="text-2xl font-bold">{{ project }}</h2><div class="text-sm text-gray-400 mt-1">Status: <span id="statusBadge" class="font-bold">UNKNOWN</span></div></div>
+        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl"><label class="text-sm text-gray-400 font-bold mr-2">Topology:</label><label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label><label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AudioReach</span></label></div>
+        <div class="flex space-x-3 items-center"><a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Code</a><button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button><button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Start Build</button><a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a></div>
     </div>
     
-    <!-- Devtool Panel -->
+    <!-- Devtool Panel with Scanner -->
     <div class="bg-gray-800 p-4 rounded-lg shadow border-l-4 border-yellow-500">
         <h3 class="text-lg font-bold mb-2 text-yellow-500"><i class="fas fa-tools mr-2"></i>Kernel Dev Kit</h3>
         <div class="flex items-center space-x-4">
-            <div class="flex-grow">
+            <div class="flex-grow relative">
                 <label class="text-xs text-gray-400 uppercase">Recipe Name</label>
-                <input type="text" id="recipeName" value="linux-qcom-next" list="common_recipes" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white font-mono">
+                <div class="flex space-x-2">
+                    <input type="text" id="recipeName" value="linux-qcom-next" list="common_recipes" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white font-mono" placeholder="Enter or search recipe...">
+                    <button onclick="scanRecipes()" id="scanBtn" class="bg-gray-700 hover:bg-gray-600 text-white px-3 rounded border border-gray-600 text-sm" title="Fetch all available recipes (takes 10s)">
+                        <i class="fas fa-sync"></i>
+                    </button>
+                </div>
                 <datalist id="common_recipes">
+                    <!-- Defaults -->
                     <option value="linux-qcom-next">
+                    <option value="audioreach-kernel">
                     <option value="qcom-audio-hal-plugins">
                     <option value="qcom-display-hal">
+                    <option value="qcom-multimedia-image">
                 </datalist>
+                <div id="scanStatus" class="text-xs text-orange-400 mt-1 hidden"><i class="fas fa-spinner fa-spin"></i> Scanning for recipes...</div>
             </div>
-            <button onclick="runDevtool('modify')" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm h-10 mt-5"><i class="fas fa-edit mr-1"></i> Modify Source</button>
-            <button onclick="runDevtool('reset')" class="bg-red-900 hover:bg-red-800 text-white px-4 py-2 rounded text-sm h-10 mt-5"><i class="fas fa-undo mr-1"></i> Reset Source</button>
-        </div>
-        <div class="text-xs text-gray-500 mt-2">
-            <i class="fas fa-info-circle"></i> 'Modify' downloads source to <code>build/workspace/sources/</code> for editing. 'Reset' reverts to upstream.
+            <button onclick="runDevtool('modify')" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm h-10 mt-6"><i class="fas fa-edit mr-1"></i> Modify</button>
+            <button onclick="runDevtool('reset')" class="bg-red-900 hover:bg-red-800 text-white px-4 py-2 rounded text-sm h-10 mt-6"><i class="fas fa-undo mr-1"></i> Reset</button>
         </div>
     </div>
 
-    <!-- Terminal -->
     <div id="terminal" class="flex-grow bg-black rounded h-[500px]"></div>
 </div>
 
 <script>
-    var socket = io(); 
-    var project = '{{ project }}'; 
+    var socket = io(); var project = '{{ project }}'; 
     var term = new Terminal({theme:{background:'#000',foreground:'#e5e5e5'}}); 
-    var fitAddon = new FitAddon.FitAddon(); 
-    term.loadAddon(fitAddon); 
-    term.open(document.getElementById('terminal')); 
-    fitAddon.fit(); 
+    var fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(document.getElementById('terminal')); fitAddon.fit(); 
 
     socket.on('connect', function() { socket.emit('join_project', {project: project}); });
     socket.on('log_chunk', function(msg){ term.write(msg.data); });
     socket.on('build_status', function(msg){ updateUI(msg.status); });
+    
+    // Recipe Scan Result
+    socket.on('recipe_list', function(msg){
+        var dl = document.getElementById('common_recipes');
+        dl.innerHTML = '';
+        msg.recipes.forEach(r => {
+            var opt = document.createElement('option');
+            opt.value = r;
+            dl.appendChild(opt);
+        });
+        document.getElementById('scanStatus').innerText = 'Found ' + msg.recipes.length + ' recipes!';
+        setTimeout(() => document.getElementById('scanStatus').classList.add('hidden'), 3000);
+        document.getElementById('scanBtn').classList.remove('animate-spin');
+    });
 
     function updateUI(status){ 
-        var b=document.getElementById('buildBtn'); 
-        var s=document.getElementById('stopBtn'); 
-        var t=document.getElementById('topoControl'); 
+        var b=document.getElementById('buildBtn'); var s=document.getElementById('stopBtn'); var t=document.getElementById('topoControl'); 
         document.getElementById('statusBadge').innerText=status.toUpperCase(); 
-        if(status=='running'){
-            b.classList.add('hidden'); s.classList.remove('hidden'); t.classList.add('opacity-50', 'pointer-events-none');
-        } else {
-            b.classList.remove('hidden'); s.classList.add('hidden'); t.classList.remove('opacity-50', 'pointer-events-none');
-        }
+        if(status=='running'){ b.classList.add('hidden'); s.classList.remove('hidden'); t.classList.add('opacity-50', 'pointer-events-none'); } 
+        else { b.classList.remove('hidden'); s.classList.add('hidden'); t.classList.remove('opacity-50', 'pointer-events-none'); }
     } 
 
-    function startBuild(){ 
-        term.clear(); 
-        var topo = document.querySelector('input[name="topo"]:checked').value; 
-        socket.emit('start_build',{project:project, topology: topo}); 
-    } 
-
-    function stopBuild(){ 
-        socket.emit('stop_build',{project:project}); 
-    }
-
+    function startBuild(){ term.clear(); var topo = document.querySelector('input[name="topo"]:checked').value; socket.emit('start_build',{project:project, topology: topo}); } 
+    function stopBuild(){ socket.emit('stop_build',{project:project}); }
+    
     function runDevtool(action) {
         var recipe = document.getElementById('recipeName').value;
         if(!recipe) { alert("Please enter a recipe name"); return; }
         if(confirm("Run devtool " + action + " on " + recipe + "?")) {
-            term.clear();
-            socket.emit('devtool_action', {project: project, action: action, recipe: recipe});
+            term.clear(); socket.emit('devtool_action', {project: project, action: action, recipe: recipe});
         }
+    }
+
+    function scanRecipes() {
+        document.getElementById('scanStatus').classList.remove('hidden');
+        document.getElementById('scanStatus').innerText = 'Scanning recipes (this takes ~30s)...';
+        document.getElementById('scanBtn').classList.add('animate-spin');
+        socket.emit('scan_recipes', {project: project});
     }
 </script>
 """
@@ -355,7 +345,6 @@ def code_explorer(name, req_path):
         abs_root = os.path.abspath(root_path)
         abs_req = os.path.abspath(os.path.join(abs_root, req_path))
         if not abs_req.startswith(abs_root): return abort(403)
-        
         pct, free = get_disk_usage()
         
         if os.path.isdir(abs_req):
@@ -386,8 +375,7 @@ def code_explorer(name, req_path):
             rel_parent = os.path.relpath(parent_dir_abs, abs_root)
             if rel_parent == '.': rel_parent = ''
             return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(EXPLORER_HTML, project=name, current_path=rel_parent, dirs=dirs, files=files, parent_dir=os.path.dirname(rel_parent) if rel_parent else None, is_file=True, content=content, ext=ext, file_size=f"{os.path.getsize(abs_req)} bytes"))
-    except Exception as e:
-        return f"Explorer Error: {str(e)}", 500
+    except Exception as e: return f"Explorer Error: {str(e)}", 500
     return abort(404)
 
 @app.route('/build/<name>')
@@ -395,45 +383,27 @@ def build_page(name):
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name))
 
-# --- OPTIMIZED SEARCH WITH DEVTOOL SUPPORT ---
 @app.route('/search_def/<project>/<symbol>')
 def search_definition(project, symbol):
     root_path, _ = get_config(project)
     if not root_path: return jsonify({'results': []})
-    
     search_paths = []
     
-    # 1. Devtool Workspace Sources (Highest Priority - Editable User Code)
     devtool_src = os.path.join(root_path, "build/workspace/sources")
     if os.path.exists(devtool_src):
-        # Scan all subdirectories in workspace/sources
         for item in os.listdir(devtool_src):
             p = os.path.join(devtool_src, item)
             if os.path.isdir(p): search_paths.append(p)
 
-    # 2. Meta Layers
-    if os.path.exists(os.path.join(root_path, "meta-qcom")):
-        search_paths.append(os.path.join(root_path, "meta-qcom"))
-    
-    # 3. Standard Kernel (Dynamic Discovery) - Only if not overridden by devtool
-    # But for search, it's safer to include both so user sees difference
+    if os.path.exists(os.path.join(root_path, "meta-qcom")): search_paths.append(os.path.join(root_path, "meta-qcom"))
     kernel_glob_path = os.path.join(root_path, "build/tmp/work-shared/*/kernel-source")
     found_kernels = glob.glob(kernel_glob_path)
-    if found_kernels:
-        search_paths.extend(found_kernels)
+    if found_kernels: search_paths.extend(found_kernels)
     
-    if not search_paths: 
-        search_paths.append(os.path.join(root_path, "meta-qcom"))
+    if not search_paths: search_paths.append(os.path.join(root_path, "meta-qcom"))
 
     results = []
-    
-    # Grep Command
-    grep_cmd = [
-        "grep", "-rnI", 
-        "--include=*.c", "--include=*.h", "--include=*.cpp", "--include=*.dts", "--include=*.dtsi",
-        "-E", f"^(struct|union|enum|class|#define|typedef).*{symbol}\\b",
-        *search_paths
-    ]
+    grep_cmd = ["grep", "-rnI", "--include=*.c", "--include=*.h", "--include=*.cpp", "--include=*.dts", "--include=*.dtsi", "-E", f"^(struct|union|enum|class|#define|typedef).*{symbol}\\b", *search_paths]
     try:
         out = subprocess.check_output(grep_cmd, stderr=subprocess.DEVNULL).decode('utf-8')
         for line in out.splitlines():
@@ -445,9 +415,7 @@ def search_definition(project, symbol):
     except: pass
 
     if not results:
-        grep_cmd_loose = [
-             "grep", "-rnI", "--include=*.c", "--include=*.h", "-E", f"^{symbol}\\(", *search_paths
-        ]
+        grep_cmd_loose = ["grep", "-rnI", "--include=*.c", "--include=*.h", "-E", f"^{symbol}\\(", *search_paths]
         try:
             out = subprocess.check_output(grep_cmd_loose, stderr=subprocess.DEVNULL).decode('utf-8')
             for line in out.splitlines():
@@ -465,8 +433,7 @@ def handle_join(data):
     join_room(data['project'])
     name = data['project']
     if name in BUILD_STATES: 
-        if 'logs' in BUILD_STATES[name]:
-            emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
+        if 'logs' in BUILD_STATES[name]: emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
         emit('build_status', {'status': BUILD_STATES[name].get('status', 'unknown')})
 
 def run_build_task(cmd, name):
@@ -503,21 +470,17 @@ def handle_build(data):
     distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
     kas_args = f"{cfg.get('kas_files')}:{distro}"
     cmd = f"kas shell {kas_args} -c 'bitbake {cfg.get('image')}'"
-    
     threading.Thread(target=run_build_task, args=(cmd, name)).start()
 
 @socketio.on('devtool_action')
 def handle_devtool(data):
     name = data['project']
-    action = data['action'] # modify or reset
+    action = data['action'] 
     recipe = data['recipe']
     path, cfg = get_config(name)
-    
-    # Reuse previous topo selection or default to ASOC
     topo = cfg.get('topology', 'ASOC')
     distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
     kas_args = f"{cfg.get('kas_files')}:{distro}"
-    
     cmd = f"kas shell {kas_args} -c 'devtool {action} {recipe}'"
     threading.Thread(target=run_build_task, args=(cmd, name)).start()
 
@@ -528,6 +491,47 @@ def handle_stop(data):
         try: os.killpg(os.getpgid(BUILD_STATES[name]['pid']), signal.SIGTERM)
         except: pass
     emit('build_status', {'status': 'stopped'}, to=name)
+
+# --- SCAN RECIPES FEATURE ---
+@socketio.on('scan_recipes')
+def handle_scan(data):
+    name = data['project']
+    path, cfg = get_config(name)
+    if not path: return
+
+    # Use basic defaults if scan fails
+    defaults = ['linux-qcom-next', 'audioreach-kernel', 'qcom-audio-hal-plugins', 'qcom-display-hal', 'qcom-multimedia-image']
+    
+    # Run bitbake -s to list all recipes
+    # Note: parsing takes time, so we do it in background
+    def run_scan():
+        try:
+            topo = cfg.get('topology', 'ASOC')
+            distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
+            kas_args = f"{cfg.get('kas_files')}:{distro}"
+            
+            # bitbake -s returns "recipe_name version"
+            cmd = f"kas shell {kas_args} -c 'bitbake -s'"
+            
+            # We don't pipe to browser log, just capture output
+            out = subprocess.check_output(cmd, shell=True, cwd=path, stderr=subprocess.DEVNULL).decode('utf-8')
+            
+            recipes = []
+            for line in out.splitlines():
+                if not line or line.startswith("Recipe") or line.startswith("---"): continue
+                parts = line.split()
+                if len(parts) >= 1:
+                    r = parts[0]
+                    # Filter for interesting ones to keep list clean-ish
+                    if any(x in r for x in ['linux', 'qcom', 'audio', 'display', 'image', 'hal']):
+                        recipes.append(r)
+            
+            recipes = sorted(list(set(recipes + defaults)))
+            socketio.emit('recipe_list', {'recipes': recipes}, to=name)
+        except Exception as e:
+            socketio.emit('recipe_list', {'recipes': defaults}, to=name)
+
+    threading.Thread(target=run_scan).start()
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=True, use_reloader=True, allow_unsafe_werkzeug=True)
