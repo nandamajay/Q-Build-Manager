@@ -8,9 +8,8 @@ import signal
 import shutil
 import time
 import re
-import json
 import datetime
-from flask import Flask, render_template_string, request, redirect, abort, jsonify
+from flask import Flask, render_template_string, request, redirect, abort, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room
 
 app = Flask(__name__)
@@ -20,7 +19,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 SERVER_PORT = int(os.environ.get("WEB_PORT", 5000))
 WORK_DIR = "/work"
 REGISTRY_FILE = os.path.join(WORK_DIR, "projects_registry.yaml")
-BUILD_DIR_BASE = os.path.join(WORK_DIR, "meta-qcom-builds")
+
+YOCTO_BASE = os.path.join(WORK_DIR, "meta-qcom-builds")
+UPSTREAM_BASE = os.path.join(WORK_DIR, "upstream-builds")
 TOOLS_DIR = os.path.join(WORK_DIR, "common_tools")
 BUILD_STATES = {}
 
@@ -32,52 +33,52 @@ def get_disk_usage():
     except: return 0, 0
 
 def ensure_tools():
-    """Ensure common tools (mkbootimg, initramfs, linux-firmware) exist."""
     if not os.path.exists(TOOLS_DIR): os.makedirs(TOOLS_DIR, exist_ok=True)
-    
-    # 1. mkbootimg
     if not os.path.exists(os.path.join(TOOLS_DIR, "mkbootimg")):
         subprocess.run(["git", "clone", "--depth", "1", "https://android.googlesource.com/platform/system/tools/mkbootimg", os.path.join(TOOLS_DIR, "mkbootimg")])
-        
-    # 2. initramfs
     initramfs_path = os.path.join(TOOLS_DIR, "initramfs-test.cpio.gz")
     if not os.path.exists(initramfs_path):
         subprocess.run(["wget", "https://snapshots.linaro.org/member-builds/qcomlt/testimages/arm64/1379/initramfs-test-image-qemuarm64-20230321073831-1379.rootfs.cpio.gz", "-O", initramfs_path])
-
-    # 3. linux-firmware (Shared)
     fw_path = os.path.join(TOOLS_DIR, "linux-firmware")
     if not os.path.exists(fw_path):
         subprocess.run(["git", "clone", "--depth", "1", "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git", fw_path])
 
 def sync_registry():
-    if not os.path.exists(REGISTRY_FILE): reg = {}
-    else:
+    reg = {}
+    os.makedirs(YOCTO_BASE, exist_ok=True)
+    os.makedirs(UPSTREAM_BASE, exist_ok=True)
+    
+    def scan_dir(base_path, default_type):
         try:
-            with open(REGISTRY_FILE, "r") as f: reg = yaml.safe_load(f) or {}
-        except: reg = {}
-    
-    if not os.path.exists(BUILD_DIR_BASE): os.makedirs(BUILD_DIR_BASE, exist_ok=True)
-    found = [d for d in os.listdir(BUILD_DIR_BASE) if os.path.isdir(os.path.join(BUILD_DIR_BASE, d))]
-    updated = False
-    
-    for p in found:
-        path = os.path.join(BUILD_DIR_BASE, p)
-        if p not in reg: 
-            # Default to Yocto if unknown, but try to detect
-            ptype = 'yocto'
-            if os.path.exists(os.path.join(path, 'linux')): ptype = 'upstream'
-            reg[p] = {'path': path, 'type': ptype, 'created': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'), 'modified': 'Unknown'}
-            updated = True
-            
-    for n, data in reg.items():
-        if isinstance(data, dict) and os.path.exists(data.get('path', '')):
-            try:
-                mtime = os.path.getmtime(data['path'])
-                reg[n]['modified'] = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-            except: pass
-            
-    if updated:
-        with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
+            found = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+            for p in found:
+                full_path = os.path.abspath(os.path.join(base_path, p))
+                ptype = default_type
+                cfg_path = os.path.join(full_path, "config.yaml")
+                created = "Unknown"; modified = "Unknown"
+                
+                # Get Times
+                try:
+                    stat = os.stat(full_path)
+                    created = datetime.datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M')
+                    modified = datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                except: pass
+
+                if os.path.exists(cfg_path):
+                    try:
+                        with open(cfg_path) as f: 
+                            c = yaml.safe_load(f)
+                            if c:
+                                if 'type' in c: ptype = c['type']
+                                if 'created' in c: created = c['created'] # Prefer stored creation date
+                    except: pass
+                
+                reg[p] = {'path': full_path, 'type': ptype, 'created': created, 'modified': modified}
+        except Exception as e: print(f"Error scanning {base_path}: {e}")
+
+    scan_dir(YOCTO_BASE, 'yocto')
+    scan_dir(UPSTREAM_BASE, 'upstream')
+    with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
     return reg
 
 def get_config(project_name):
@@ -87,8 +88,17 @@ def get_config(project_name):
     path = data['path']
     cfg_path = os.path.join(path, "config.yaml")
     if os.path.exists(cfg_path):
-        with open(cfg_path) as f: return path, yaml.safe_load(f)
+        try:
+            with open(cfg_path) as f: return path, yaml.safe_load(f)
+        except: return path, {}
     return path, {}
+
+def find_yocto_image(path, machine):
+    deploy_dir = os.path.join(path, "build/tmp/deploy/images", machine)
+    if not os.path.exists(deploy_dir): return None
+    candidates = glob.glob(os.path.join(deploy_dir, "*-image-*.rootfs.wic.zst"))
+    if candidates: return candidates[0] 
+    return None
 
 def background_delete(path, name):
     try: shutil.rmtree(path)
@@ -116,6 +126,7 @@ def run_build_task(cmd, name):
     final_status = 'done' if p.returncode == 0 else 'failed'
     BUILD_STATES[name]['status'] = final_status
     socketio.emit('build_status', {'status': final_status}, to=name)
+    socketio.emit('check_artifacts', {'project': name}, to=name)
 
 # --- HTML TEMPLATES ---
 BASE_HTML = """
@@ -123,7 +134,7 @@ BASE_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Q-Build Manager V26</title>
+    <title>Q-Build V30</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -133,19 +144,21 @@ BASE_HTML = """
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <style>
-        .nav-token { cursor: pointer; border-bottom: 1px dotted rgba(255,255,255,0.2); }
-        .nav-token:hover { background-color: rgba(59, 130, 246, 0.3); color: #60a5fa !important; border-bottom: 1px solid #60a5fa; }
         .hljs { background: transparent; padding: 0; } 
         .code-container { display: flex; font-family: 'Fira Code', monospace; line-height: 1.5; font-size: 13px; }
         .line-numbers { text-align: right; padding-right: 15px; color: #6b7280; user-select: none; border-right: 1px solid #374151; margin-right: 15px; min-width: 40px; }
         .code-content { flex-grow: 1; overflow-x: auto; }
+        .highlighted-line { background-color: rgba(255, 255, 0, 0.2); display: block; width: 100%; }
         textarea.editor { width: 100%; height: 100%; background: #1f2937; color: #e5e7eb; font-family: 'Fira Code', monospace; font-size: 13px; border: none; outline: none; resize: none; line-height: 1.5; padding: 0; }
+        .proj-pane::-webkit-scrollbar { width: 8px; }
+        .proj-pane::-webkit-scrollbar-track { background: #1f2937; }
+        .proj-pane::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
     <nav class="bg-gray-800 p-4 border-b border-gray-700">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-white font-bold bg-green-600 px-1 rounded">V26 PRO</span></a>
+            <a href="/" class="text-2xl font-bold text-blue-400"><i class="fas fa-microchip mr-2"></i>Q-Build <span class="text-xs text-white font-bold bg-green-600 px-1 rounded">V30 PRO</span></a>
             <div class="flex items-center space-x-6">
                 <div class="flex items-center space-x-2 text-sm">
                     <i class="fas fa-hdd text-gray-400"></i>
@@ -175,7 +188,8 @@ EXPLORER_HTML = """
     <div class="w-4/5 flex flex-col bg-[#282c34] relative">
         <div class="p-2 bg-gray-800 border-b border-gray-700 text-xs text-gray-400 flex justify-between items-center">
             <span class="font-mono text-blue-300">{{ current_path }}</span>
-            <div class="flex space-x-2">
+            <div class="flex space-x-2 items-center">
+                <span class="text-xs text-gray-500 mr-2"><i class="fas fa-mouse-pointer"></i> Double-click to search</span>
                 {% if is_file %}
                 <button id="editBtn" onclick="enableEdit()" class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-pen mr-1"></i> Edit</button>
                 <button id="saveBtn" onclick="saveFile()" class="hidden bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-white text-xs"><i class="fas fa-save mr-1"></i> Save</button>
@@ -186,7 +200,7 @@ EXPLORER_HTML = """
         <div class="flex-grow overflow-auto p-4 relative" id="codeContainer">
             {% if is_file %}
             <div class="code-container" id="readView">
-                <div class="line-numbers">{% for i in range(1, line_count + 1) %}<div>{{ i }}</div>{% endfor %}</div>
+                <div class="line-numbers">{% for i in range(1, line_count + 1) %}<div id="L{{ i }}">{{ i }}</div>{% endfor %}</div>
                 <div class="code-content"><pre><code class="language-{{ ext }}" id="codeBlock">{{ content }}</code></pre></div>
             </div>
             <div class="code-container hidden h-full" id="editView">
@@ -201,6 +215,29 @@ EXPLORER_HTML = """
 </div>
 <script>
     hljs.highlightAll();
+    
+    // Auto Scroll to Anchor
+    window.onload = function() {
+        var hash = window.location.hash;
+        if(hash) {
+            var lineNum = hash.replace('#L', '');
+            var el = document.getElementById('L' + lineNum);
+            if(el) {
+                el.scrollIntoView({block: 'center', behavior: 'smooth'});
+                el.style.color = '#fbbf24';
+                el.style.fontWeight = 'bold';
+            }
+        }
+    };
+
+    // Double Click to Search
+    document.getElementById('codeBlock').addEventListener('dblclick', function(e) {
+        var selection = window.getSelection().toString().trim();
+        if(selection && selection.length > 2) {
+            window.open('/search?project={{ project }}&q=' + encodeURIComponent(selection), '_blank');
+        }
+    });
+
     function enableEdit() { document.getElementById('readView').classList.add('hidden'); document.getElementById('editView').classList.remove('hidden'); document.getElementById('editBtn').classList.add('hidden'); document.getElementById('saveBtn').classList.remove('hidden'); document.getElementById('cancelBtn').classList.remove('hidden'); }
     function saveFile() {
         var content = document.getElementById('fileEditor').value;
@@ -210,44 +247,162 @@ EXPLORER_HTML = """
 </script>
 """
 
-DASHBOARD_HTML = """<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{% for name, data in projects.items() %}{% if states.get(name, {}).get('status') != 'deleting' %}<div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative group"><h3 class="text-xl font-bold mb-1">{{ name }}</h3><div class="flex justify-between"><p class="text-gray-400 text-xs mb-2 truncate">{{ data.path }}</p><span class="text-xs px-2 py-0.5 rounded {{ 'bg-blue-900 text-blue-200' if data.get('type')=='upstream' else 'bg-yellow-900 text-yellow-200' }}">{{ data.get('type', 'yocto').upper() }}</span></div><div class="text-xs text-gray-500 mb-4"><p><i class="far fa-clock"></i> {{ data.created }}</p></div><div class="flex justify-between items-center mt-4"><div class="flex space-x-2"><a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-2 rounded text-white text-sm"><i class="fas fa-hammer"></i> Build</a><a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded text-white text-sm"><i class="fas fa-code"></i></a></div><a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 px-3 py-2 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }} permanently?')"><i class="fas fa-trash"></i></a></div><div class="absolute top-4 right-4 h-3 w-3 rounded-full {{ 'bg-yellow-500 animate-pulse' if states.get(name, {}).get('status') == 'running' else 'bg-green-500' if states.get(name, {}).get('status') == 'done' else 'bg-gray-600' }}"></div></div>{% endif %}{% else %}<div class="col-span-3 text-center py-20 text-gray-500"><p>No projects found.</p></div>{% endfor %}</div>"""
+SEARCH_HTML = """
+<div class="max-w-6xl mx-auto bg-gray-800 p-6 rounded-lg shadow-lg h-[85vh] flex flex-col">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-2xl font-bold">Search: <span class="text-yellow-400">{{ query }}</span></h2>
+        <a href="/code/{{ project }}/" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">Back to Code</a>
+    </div>
+    <div class="flex-grow overflow-y-auto bg-gray-900 p-4 rounded border border-gray-700 font-mono text-sm">
+        {% if results %}
+            {% for r in results %}
+            <div class="mb-2">
+                <a href="/code/{{ project }}/{{ r.file }}#L{{ r.line }}" class="text-blue-400 hover:underline break-all">{{ r.file }}:{{ r.line }}</a>
+                <div class="text-gray-400 pl-4 whitespace-pre-wrap">{{ r.content }}</div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="text-gray-500 text-center mt-10">No results found for "{{ query }}"</div>
+        {% endif %}
+    </div>
+</div>
+"""
+
+DASHBOARD_HTML = """
+<div class="flex flex-col md:flex-row gap-6 h-[80vh]">
+    <!-- Yocto Pane -->
+    <div class="w-full md:w-1/2 flex flex-col bg-gray-800 rounded-lg shadow-lg border border-gray-700">
+        <div class="p-4 border-b border-gray-700 bg-gray-900 rounded-t-lg">
+            <h3 class="text-xl font-bold text-yellow-500"><i class="fas fa-layer-group mr-2"></i>Meta-Qcom (Yocto)</h3>
+        </div>
+        <div class="p-4 overflow-y-auto proj-pane flex-grow space-y-4">
+            {% for name, data in projects.items() %}
+            {% if data.get('type') == 'yocto' and states.get(name, {}).get('status') != 'deleting' %}
+            <div class="bg-gray-700 p-4 rounded border border-gray-600 hover:border-yellow-500 transition relative group">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h4 class="font-bold text-lg text-white">{{ name }}</h4>
+                        <p class="text-gray-400 text-[10px] font-mono mt-1">{{ data.path }}</p>
+                        <div class="flex space-x-3 mt-2 text-[10px] text-gray-500">
+                            <span><i class="far fa-clock"></i> Created: {{ data.created }}</span>
+                            <span><i class="fas fa-pencil-alt"></i> Mod: {{ data.modified }}</span>
+                        </div>
+                    </div>
+                    {% set st = states.get(name, {}).get('status', 'IDLE') %}
+                    <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-yellow-600 text-white animate-pulse' if st == 'running' else 'bg-green-700 text-white' if st == 'done' else 'bg-red-700 text-white' if st == 'failed' else 'bg-gray-600 text-gray-300' }}">
+                        {{ st.upper() }}
+                    </span>
+                </div>
+                <div class="flex justify-between items-center mt-3">
+                    <div class="flex space-x-2">
+                        <a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
+                        <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
+                    </div>
+                    <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }}?')"><i class="fas fa-trash"></i></a>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Upstream Pane -->
+    <div class="w-full md:w-1/2 flex flex-col bg-gray-800 rounded-lg shadow-lg border border-gray-700">
+        <div class="p-4 border-b border-gray-700 bg-gray-900 rounded-t-lg">
+            <h3 class="text-xl font-bold text-blue-400"><i class="fab fa-linux mr-2"></i>Upstream Kernel</h3>
+        </div>
+        <div class="p-4 overflow-y-auto proj-pane flex-grow space-y-4">
+            {% for name, data in projects.items() %}
+            {% if data.get('type') == 'upstream' and states.get(name, {}).get('status') != 'deleting' %}
+            <div class="bg-gray-700 p-4 rounded border border-gray-600 hover:border-blue-400 transition relative group">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h4 class="font-bold text-lg text-white">{{ name }}</h4>
+                        <p class="text-gray-400 text-[10px] font-mono mt-1">{{ data.path }}</p>
+                        <div class="flex space-x-3 mt-2 text-[10px] text-gray-500">
+                            <span><i class="far fa-clock"></i> Created: {{ data.created }}</span>
+                            <span><i class="fas fa-pencil-alt"></i> Mod: {{ data.modified }}</span>
+                        </div>
+                    </div>
+                    {% set st = states.get(name, {}).get('status', 'IDLE') %}
+                    <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-yellow-600 text-white animate-pulse' if st == 'running' else 'bg-green-700 text-white' if st == 'done' else 'bg-red-700 text-white' if st == 'failed' else 'bg-gray-600 text-gray-300' }}">
+                        {{ st.upper() }}
+                    </span>
+                </div>
+                <div class="flex justify-between items-center mt-3">
+                    <div class="flex space-x-2">
+                        <a href="/build/{{ name }}" class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
+                        <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
+                    </div>
+                    <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }}?')"><i class="fas fa-trash"></i></a>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+"""
 
 BUILD_CONSOLE_HTML = """
 <div class="flex flex-col h-full space-y-4">
-    <div class="bg-gray-800 p-4 rounded-lg shadow flex justify-between items-center">
-        <div><h2 class="text-2xl font-bold">{{ project }}</h2><div class="text-sm text-gray-400 mt-1 flex items-center gap-2"><span class="px-2 py-0.5 rounded bg-gray-700 text-white text-xs">{{ type.upper() }}</span> Status: <span id="statusBadge" class="font-bold">IDLE</span></div></div>
-        
-        {% if type == 'yocto' %}
-        <!-- YOCTO CONTROLS -->
-        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700" id="topoControl">
-            <label class="text-sm text-gray-400 font-bold mr-2">Topology:</label>
-            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label>
-            <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AudioReach</span></label>
+    <div class="bg-gray-800 p-4 rounded-lg shadow">
+        <div class="flex justify-between items-center mb-4">
+            <div><h2 class="text-2xl font-bold">{{ project }}</h2><div class="text-sm text-gray-400 mt-1 flex items-center gap-2"><span class="px-2 py-0.5 rounded bg-gray-700 text-white text-xs">{{ type.upper() }}</span> Status: <span id="statusBadge" class="font-bold">IDLE</span></div></div>
+            <div class="flex space-x-3 items-center">
+                <a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Code</a>
+                <button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button>
+                <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Build</button>
+                <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
+            </div>
         </div>
-        <div class="flex items-center space-x-2 bg-gray-900 p-1 rounded border border-gray-700">
-             <select id="cleanType" class="bg-gray-800 text-white text-sm border-none rounded p-1"><option value="clean">Quick Clean</option><option value="cleanall">Deep Clean</option></select>
-             <button onclick="runClean()" class="bg-orange-800 hover:bg-orange-700 px-3 py-1 rounded text-white text-sm"><i class="fas fa-broom"></i></button>
-        </div>
-        {% else %}
-        <!-- UPSTREAM CONTROLS -->
-        <div class="flex items-center space-x-4 bg-gray-900 p-2 rounded border border-gray-700">
-             <div class="flex flex-col">
-                 <label class="text-xs text-gray-400">Firmware Target</label>
-                 <select id="fwTarget" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-32"><option value="loading">Loading...</option></select>
-             </div>
-             <div class="flex flex-col">
-                 <label class="text-xs text-gray-400">DTB Name</label>
-                 <input type="text" id="dtbName" value="lemans-evk.dtb" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-32">
-             </div>
-             <button onclick="scanFw()" class="text-gray-400 hover:text-white"><i class="fas fa-sync"></i></button>
-        </div>
-        {% endif %}
 
-        <div class="flex space-x-3 items-center">
-            <a href="/code/{{ project }}/" target="_blank" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white"><i class="fas fa-external-link-alt mr-1"></i> Code</a>
-            <button onclick="stopBuild()" id="stopBtn" class="hidden bg-red-600 text-white px-6 py-2 rounded">STOP</button>
-            <button onclick="startBuild()" id="buildBtn" class="bg-green-600 text-white px-6 py-2 rounded"><i class="fas fa-play mr-1"></i> Build</button>
-            <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
+        <!-- CONTROLS ROW -->
+        <div class="flex flex-wrap gap-4 items-center bg-gray-900 p-3 rounded border border-gray-700">
+            {% if type == 'yocto' %}
+            <!-- YOCTO CONTROLS -->
+            <div class="flex items-center space-x-2 border-r border-gray-600 pr-4">
+                <label class="text-xs text-gray-400 font-bold uppercase">Topology</label>
+                <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="ASOC" class="form-radio text-blue-600" checked><span class="ml-2 text-sm">ASOC</span></label>
+                <label class="inline-flex items-center cursor-pointer"><input type="radio" name="topo" value="AudioReach" class="form-radio text-blue-600"><span class="ml-2 text-sm">AR</span></label>
+            </div>
+            <div class="flex items-center space-x-2">
+                 <select id="cleanType" class="bg-gray-800 text-white text-sm border-none rounded p-1"><option value="clean">Quick Clean</option><option value="cleanall">Deep Clean</option></select>
+                 <button onclick="runClean()" class="bg-orange-800 hover:bg-orange-700 px-3 py-1 rounded text-white text-sm"><i class="fas fa-broom"></i></button>
+            </div>
+            {% else %}
+            <!-- UPSTREAM CONTROLS -->
+            <div class="flex flex-col">
+                <label class="text-xs text-gray-400">Image Name (Optional)</label>
+                <input type="text" id="imgName" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-32" placeholder="boot.img">
+            </div>
+            <div class="flex flex-col">
+                <label class="text-xs text-gray-400">Firmware</label>
+                <input list="fwList" id="fwTarget" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-32" placeholder="Search...">
+                <datalist id="fwList"><option value="loading">Loading...</option></datalist>
+            </div>
+            <div class="flex flex-col">
+                <label class="text-xs text-gray-400">DTB</label>
+                <div class="flex space-x-1">
+                   <input list="dtbList" id="dtbSelect" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-40" placeholder="Search..." value="lemans-evk.dtb">
+                   <datalist id="dtbList"><option value="lemans-evk.dtb"></datalist>
+                   <button onclick="scanDtb()" title="Scan DTBs" class="text-gray-400 hover:text-white"><i class="fas fa-sync"></i></button>
+                </div>
+            </div>
+            <div class="border-l border-gray-600 pl-4">
+                 <button onclick="runClean()" class="bg-orange-800 hover:bg-orange-700 px-3 py-1 rounded text-white text-sm mt-4"><i class="fas fa-broom"></i> Clean</button>
+            </div>
+            {% endif %}
+        </div>
+        
+        <!-- ARTIFACTS AREA -->
+        <div id="artifactArea" class="mt-4 p-2 bg-gray-900 rounded border border-gray-600 hidden flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-gift text-yellow-400"></i>
+                <span class="text-sm font-bold text-gray-300">Artifact Available:</span>
+                <span id="artifactPath" class="font-mono text-xs text-blue-300"></span>
+            </div>
+            <a id="downloadLink" href="#" class="bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-white text-xs font-bold"><i class="fas fa-download mr-1"></i> Download</a>
         </div>
     </div>
     
@@ -273,19 +428,43 @@ BUILD_CONSOLE_HTML = """
     var term = new Terminal({theme:{background:'#000',foreground:'#e5e5e5'}}); 
     var fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(document.getElementById('terminal')); fitAddon.fit(); 
 
-    socket.on('connect', function() { socket.emit('join_project', {project: project}); if(ptype=='upstream') socket.emit('scan_fw', {}); });
+    socket.on('connect', function() { 
+        socket.emit('join_project', {project: project}); 
+        if(ptype=='upstream') { socket.emit('scan_fw', {}); socket.emit('scan_dtb', {project: project}); }
+        socket.emit('check_artifacts', {project: project});
+    });
+    
     socket.on('log_chunk', function(msg){ term.write(msg.data); });
     socket.on('build_status', function(msg){ updateUI(msg.status); });
     socket.on('fw_list', function(msg){
-        var sel = document.getElementById('fwTarget'); sel.innerHTML = '';
-        msg.targets.forEach(t => { var opt = document.createElement('option'); opt.value = t; opt.text = t; if(t.includes('8775')) opt.selected=true; sel.appendChild(opt); });
+        var list = document.getElementById('fwList'); list.innerHTML = '';
+        msg.targets.forEach(t => { var opt = document.createElement('option'); opt.value = t; list.appendChild(opt); });
+    });
+    socket.on('dtb_list', function(msg){
+        var list = document.getElementById('dtbList'); 
+        if(msg.dtbs.length > 0) {
+            list.innerHTML = '';
+            msg.dtbs.forEach(d => { var opt = document.createElement('option'); opt.value = d; list.appendChild(opt); });
+        }
+    });
+    socket.on('artifact_found', function(msg){
+        var area = document.getElementById('artifactArea');
+        var path = document.getElementById('artifactPath');
+        var link = document.getElementById('downloadLink');
+        if(msg.found) {
+            area.classList.remove('hidden');
+            path.innerText = msg.path;
+            link.href = "/download_artifact/" + project + "?file=" + encodeURIComponent(msg.filename);
+        } else {
+            area.classList.add('hidden');
+        }
     });
 
     function updateUI(status){ 
         var b=document.getElementById('buildBtn'); var s=document.getElementById('stopBtn'); 
         document.getElementById('statusBadge').innerText=status.toUpperCase(); 
         if(status=='running'){ b.classList.add('hidden'); s.classList.remove('hidden'); } 
-        else { b.classList.remove('hidden'); s.classList.add('hidden'); }
+        else { b.classList.remove('hidden'); s.classList.add('hidden'); socket.emit('check_artifacts', {project: project}); }
     } 
     function startBuild(){ 
         term.clear(); 
@@ -294,14 +473,16 @@ BUILD_CONSOLE_HTML = """
             socket.emit('start_build',{project:project, topology: topo}); 
         } else {
             var fw = document.getElementById('fwTarget').value;
-            var dtb = document.getElementById('dtbName').value;
-            socket.emit('start_build', {project: project, fw_target: fw, dtb: dtb});
+            var dtb = document.getElementById('dtbSelect').value;
+            var img = document.getElementById('imgName').value;
+            if(!fw || fw === 'loading') fw = 'sa8775p';
+            socket.emit('start_build', {project: project, fw_target: fw, dtb: dtb, img_name: img});
         }
     } 
     function stopBuild(){ socket.emit('stop_build',{project:project}); }
-    function runClean() { if(confirm("Clean build artifacts?")) { term.clear(); socket.emit('clean_build', {project: project, type: document.getElementById('cleanType').value}); } }
+    function runClean() { if(confirm("Clean build artifacts?")) { term.clear(); socket.emit('clean_build', {project: project, type: (ptype=='yocto' ? document.getElementById('cleanType').value : 'upstream')}); } }
     function runDevtool(action) { var r = document.getElementById('recipeName').value; if(confirm(action.toUpperCase() + " " + r + "?")) { term.clear(); socket.emit('devtool_action', {project: project, action: action, recipe: r}); } }
-    function scanFw() { socket.emit('scan_fw', {}); }
+    function scanDtb() { socket.emit('scan_dtb', {project: project}); }
 </script>
 """
 
@@ -316,12 +497,12 @@ CREATE_STEP1_HTML = """
                 <label class="cursor-pointer border border-gray-600 rounded p-4 hover:bg-gray-700 flex flex-col items-center">
                     <input type="radio" name="type" value="yocto" checked class="mb-2">
                     <span class="font-bold text-yellow-400">Yocto (KAS)</span>
-                    <span class="text-xs text-gray-500 text-center">Full OS Image (Meta-Qualcomm)</span>
+                    <span class="text-xs text-gray-500 text-center">Full OS Image</span>
                 </label>
                 <label class="cursor-pointer border border-gray-600 rounded p-4 hover:bg-gray-700 flex flex-col items-center">
                     <input type="radio" name="type" value="upstream" class="mb-2">
                     <span class="font-bold text-blue-400">Upstream Kernel</span>
-                    <span class="text-xs text-gray-500 text-center">Kernel.org + Firmware + BootImg</span>
+                    <span class="text-xs text-gray-500 text-center">Kernel + BootImg</span>
                 </label>
             </div>
         </div>
@@ -349,7 +530,6 @@ CREATE_STEP2_HTML = """
                 <option value="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git">Linux Stable (torvalds/linux.git)</option>
                 <option value="git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git">Linux Next (next/linux-next.git)</option>
             </select>
-            <p class="text-xs text-gray-500 mt-2"><i class="fas fa-info-circle"></i> Firmware selection happens at build time.</p>
         </div>
         {% endif %}
         
@@ -361,7 +541,7 @@ CREATE_STEP2_HTML = """
 # --- ROUTES ---
 @app.route('/')
 def index():
-    threading.Thread(target=ensure_tools).start() # Trigger tool check in bg
+    threading.Thread(target=ensure_tools).start()
     reg = sync_registry()
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(DASHBOARD_HTML, projects=reg, states=BUILD_STATES))
@@ -375,7 +555,8 @@ def create_step1_view():
 def create_step2_action():
     name = request.form['name']
     ptype = request.form['type']
-    proj_path = os.path.join(BUILD_DIR_BASE, name)
+    base_dir = YOCTO_BASE if ptype == 'yocto' else UPSTREAM_BASE
+    proj_path = os.path.join(base_dir, name)
     os.makedirs(proj_path, exist_ok=True)
     
     boards = []
@@ -385,24 +566,20 @@ def create_step2_action():
         ci_path = os.path.join(repo_path, "ci")
         boards = [f for f in os.listdir(ci_path) if f.endswith('.yml')] if os.path.exists(ci_path) else []
         boards.sort()
-        
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(CREATE_STEP2_HTML, project=name, type=ptype, boards=boards))
 
 @app.route('/finish_create', methods=['POST'])
 def finish_create():
-    name = request.form['name']
-    ptype = request.form['type']
-    proj_path = os.path.join(BUILD_DIR_BASE, name)
+    name = request.form['name']; ptype = request.form['type']
+    base_dir = YOCTO_BASE if ptype == 'yocto' else UPSTREAM_BASE
+    proj_path = os.path.join(base_dir, name)
     
     cfg = {'type': ptype, 'created': datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
-    
     if ptype == 'yocto':
         cfg['kas_files'] = f"meta-qcom/ci/{request.form['board']}"
         cfg['image'] = "qcom-multimedia-image"
-    else:
-        cfg['kernel_repo'] = request.form['kernel_repo']
-        
+    else: cfg['kernel_repo'] = request.form['kernel_repo']
     with open(os.path.join(proj_path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
     sync_registry()
     return redirect('/')
@@ -418,10 +595,44 @@ def delete(name):
         with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
     return redirect('/')
 
+@app.route('/download_artifact/<name>')
+def download_artifact(name):
+    path, cfg = get_config(name)
+    if not path: return abort(404)
+    filename = request.args.get('file')
+    if not filename: return abort(400)
+    abs_path = os.path.abspath(os.path.join(path, filename))
+    if not abs_path.startswith(os.path.abspath(path)): return abort(403)
+    if os.path.exists(abs_path): return send_file(abs_path, as_attachment=True)
+    return abort(404)
+
+@app.route('/search')
+def search_view():
+    project = request.args.get('project'); query = request.args.get('q')
+    if not project or not query: return "Missing params", 400
+    path, _ = get_config(project)
+    
+    results = []
+    if path:
+        # Secure grep
+        safe_query = re.escape(query)
+        # Grep, exclude binary, line numbers, recursive
+        cmd = ["grep", "-rnI", safe_query, "."]
+        try:
+            out = subprocess.check_output(cmd, cwd=path, text=True, timeout=5)
+            lines = out.splitlines()[:50] # Limit results
+            for line in lines:
+                parts = line.split(':', 2)
+                if len(parts) >= 3:
+                    results.append({'file': parts[0], 'line': parts[1], 'content': parts[2]})
+        except: pass
+        
+    pct, free = get_disk_usage()
+    return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(SEARCH_HTML, project=project, query=query, results=results))
+
 @app.route('/code/<name>/', defaults={'req_path': ''})
 @app.route('/code/<name>/<path:req_path>')
 def code_explorer(name, req_path):
-    # (Existing Logic - Preserved)
     try:
         root_path, _ = get_config(name)
         if not root_path: return redirect('/')
@@ -460,9 +671,7 @@ def code_explorer(name, req_path):
 @app.route('/save_file', methods=['POST'])
 def save_file_endpoint():
     data = request.get_json()
-    name = data.get('project')
-    rel_path = data.get('path')
-    content = data.get('content')
+    name = data.get('project'); rel_path = data.get('path'); content = data.get('content')
     path, _ = get_config(name)
     if not path: return jsonify({'error': 'Project not found'}), 404
     try:
@@ -486,6 +695,32 @@ def handle_join(data):
         if 'logs' in BUILD_STATES[name]: emit('log_chunk', {'data': "".join(BUILD_STATES[name]['logs'])})
         emit('build_status', {'status': BUILD_STATES[name].get('status', 'unknown')})
 
+@socketio.on('check_artifacts')
+def handle_check_artifacts(data):
+    name = data['project']
+    path, cfg = get_config(name)
+    if not path: return
+    
+    found = False; filename = ""; abs_p = ""
+    # Get user configured image name for Upstream
+    target_name = cfg.get('target_image', 'boot.img')
+    
+    if cfg.get('type') == 'upstream':
+        img = os.path.join(path, target_name)
+        if os.path.exists(img):
+            found = True; filename = target_name; abs_p = img
+    else:
+        kas_files = cfg.get('kas_files', '')
+        machine = 'qcm6490' # fallback
+        if 'iq-9075' in kas_files: machine = 'iq-9075-evk'
+        elif 'rb5' in kas_files: machine = 'rb5'
+        elif 'lemans' in kas_files: machine = 'lemans-evk'
+        img = find_yocto_image(path, machine)
+        if img:
+            found = True; filename = os.path.relpath(img, path); abs_p = img
+
+    socketio.emit('artifact_found', {'found': found, 'path': abs_p, 'filename': filename}, to=name)
+
 @socketio.on('start_build')
 def handle_build(data):
     name = data['project']
@@ -493,7 +728,6 @@ def handle_build(data):
     ptype = cfg.get('type', 'yocto')
 
     if ptype == 'yocto':
-        # --- YOCTO FLOW ---
         topo = data.get('topology', 'ASOC')
         cfg['topology'] = topo
         with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
@@ -502,80 +736,67 @@ def handle_build(data):
         cmd = f"kas shell {kas_args} -c 'bitbake {cfg.get('image')}'"
         threading.Thread(target=run_build_task, args=(cmd, name)).start()
     else:
-        # --- UPSTREAM FLOW ---
         fw_target = data.get('fw_target', 'sa8775p')
         dtb_name = data.get('dtb', 'lemans-evk.dtb')
+        img_name = data.get('img_name', '').strip()
+        if not img_name: img_name = 'boot.img'
+        
+        # Save image name to config for artifact checking
+        cfg['target_image'] = img_name
+        with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
+
         repo = cfg.get('kernel_repo')
-        
-        # Paths
-        linux_dir = os.path.join(path, "linux")
-        mod_dir = os.path.join(linux_dir, "modules_dir")
-        fw_dir = os.path.join(linux_dir, "firmwares_dir")
-        
-        # Tools paths
         mkboot = os.path.join(TOOLS_DIR, "mkbootimg", "mkbootimg.py")
         initramfs = os.path.join(TOOLS_DIR, "initramfs-test.cpio.gz")
         fw_src = os.path.join(TOOLS_DIR, "linux-firmware", "qcom", fw_target)
         
-        # Bash Script Construction
         script = [
             f"echo '--- UPSTREAM BUILD STARTED FOR {name} ---'",
             f"echo 'Target Firmware: {fw_target}'",
-            f"echo 'DTB: {dtb_name}'",
-            
-            # 1. Clone
+            f"echo 'Output Image: {img_name}'",
             f"if [ ! -d 'linux' ]; then echo '>> Cloning Kernel...'; git clone --depth 1 {repo} linux; fi",
             "cd linux",
             "mkdir -p modules_dir firmwares_dir test_utils",
-            
-            # 2. Build Kernel
             "export ARCH=arm64",
             "export CROSS_COMPILE=aarch64-linux-gnu-",
             "echo '>> Configuring...'",
             "make -j$(nproc) defconfig",
             "echo '>> Compiling Image & Modules...'",
             "make -j$(nproc) Image.gz dtbs modules",
-            
-            # 3. Install Modules
             "echo '>> Installing Modules...'",
             "make -j$(nproc) modules_install INSTALL_MOD_PATH=modules_dir INSTALL_MOD_STRIP=1",
             "cd modules_dir",
             "find . | cpio -o -H newc | gzip -9 > ../modules.cpio.gz",
             "cd ..",
-            
-            # 4. Prepare Firmware
             "echo '>> Packaging Firmware...'",
             f"mkdir -p firmwares_dir/lib/firmware/qcom/{fw_target}",
             f"if [ -d '{fw_src}' ]; then cp -r {fw_src}/* firmwares_dir/lib/firmware/qcom/{fw_target}/; else echo 'WARNING: Firmware source not found'; fi",
             "cd firmwares_dir",
             "find . | cpio -o -H newc | gzip -9 > ../firmwares.cpio.gz",
             "cd ..",
-            
-            # 5. Final RootFS
             "echo '>> Creating Final Initramfs...'",
-            # Create dummy test_utils if missing to satisfy cat
             "touch test_utils.cpio.gz", 
             f"cat {initramfs} modules.cpio.gz firmwares.cpio.gz test_utils.cpio.gz > final-initramfs.cpio.gz",
-            
-            # 6. Mkbootimg
             "echo '>> Generating Boot Image...'",
-            f"python3 {mkboot} --kernel arch/arm64/boot/Image.gz --cmdline 'root=/dev/ram0 console=tty0 console=ttyMSM0,115200n8 clk_ignore_unused pd_ignore_unused' --ramdisk final-initramfs.cpio.gz --dtb arch/arm64/boot/dts/qcom/{dtb_name} --pagesize 2048 --header_version 2 --output ../boot-rb8.img",
-            
-            "echo '--- SUCCESS: boot-rb8.img created ---'"
+            f"python3 {mkboot} --kernel arch/arm64/boot/Image.gz --cmdline 'root=/dev/ram0 console=tty0 console=ttyMSM0,115200n8 clk_ignore_unused pd_ignore_unused' --ramdisk final-initramfs.cpio.gz --dtb arch/arm64/boot/dts/qcom/{dtb_name} --pagesize 2048 --header_version 2 --output ../{img_name}",
+            f"echo '--- SUCCESS: {img_name} created ---'"
         ]
-        
-        full_cmd = " && ".join(script)
-        threading.Thread(target=run_build_task, args=(full_cmd, name)).start()
+        threading.Thread(target=run_build_task, args=(" && ".join(script), name)).start()
 
 @socketio.on('clean_build')
 def handle_clean(data):
-    name = data['project']
-    clean_type = data.get('type', 'clean') 
+    name = data['project']; clean_type = data.get('type', 'clean') 
     path, cfg = get_config(name)
-    topo = cfg.get('topology', 'ASOC')
-    distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
-    kas_args = f"{cfg.get('kas_files')}:{distro}"
-    cmd = f"kas shell {kas_args} -c 'bitbake -c {clean_type} {cfg.get('image')}'"
+    
+    if cfg.get('type') == 'yocto':
+        topo = cfg.get('topology', 'ASOC')
+        distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
+        kas_args = f"{cfg.get('kas_files')}:{distro}"
+        cmd = f"kas shell {kas_args} -c 'bitbake -c {clean_type} {cfg.get('image')}'"
+    else:
+        # Upstream Clean
+        cmd = "cd linux && make clean"
+        
     threading.Thread(target=run_build_task, args=(cmd, name)).start()
 
 @socketio.on('devtool_action')
@@ -599,14 +820,22 @@ def handle_stop(data):
 
 @socketio.on('scan_fw')
 def handle_scan_fw(data):
-    # Lists subdirectories in tools/linux-firmware/qcom
     fw_base = os.path.join(TOOLS_DIR, "linux-firmware", "qcom")
-    targets = []
-    if os.path.exists(fw_base):
-        targets = [d for d in os.listdir(fw_base) if os.path.isdir(os.path.join(fw_base, d))]
-    else:
-        targets = ['sa8775p', 'sm8550', 'sc8280xp'] # Fallback if not yet cloned
+    targets = [d for d in os.listdir(fw_base) if os.path.isdir(os.path.join(fw_base, d))] if os.path.exists(fw_base) else ['sa8775p', 'sm8550']
     socketio.emit('fw_list', {'targets': sorted(targets)})
+
+@socketio.on('scan_dtb')
+def handle_scan_dtb(data):
+    name = data.get('project')
+    path, cfg = get_config(name)
+    dtbs = []
+    if path:
+        dts_path = os.path.join(path, "linux/arch/arm64/boot/dts/qcom")
+        if os.path.exists(dts_path):
+            dts_files = glob.glob(os.path.join(dts_path, "*.dts"))
+            dtbs = [os.path.basename(f).replace('.dts', '.dtb') for f in dts_files]
+    if not dtbs: dtbs = ['lemans-evk.dtb'] 
+    socketio.emit('dtb_list', {'dtbs': sorted(dtbs)})
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=SERVER_PORT, allow_unsafe_werkzeug=True)

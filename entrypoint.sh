@@ -1,29 +1,28 @@
 #!/bin/bash
 set -e
 
-USER_ID=${HOST_UID:-1000}
-GROUP_ID=${HOST_GID:-1000}
+# Default to 1000 if not set
+HOST_UID=${HOST_UID:-1000}
+HOST_GID=${HOST_GID:-1000}
 
-# Handle Root Host Case
-if [ "$USER_ID" -eq 0 ]; then
-    USER_ID=1000
-    GROUP_ID=1000
+echo ">> Configuring container for UID: $HOST_UID / GID: $HOST_GID"
+
+# Handle Group
+if getent group builder > /dev/null 2>&1; then
+    groupmod -g $HOST_GID builder
+else
+    groupadd -g $HOST_GID builder
 fi
 
-if ! getent group "$GROUP_ID" > /dev/null; then
-    groupadd -g "$GROUP_ID" builder
+# Handle User
+if id -u builder > /dev/null 2>&1; then
+    usermod -u $HOST_UID -g $HOST_GID builder
+else
+    useradd -u $HOST_UID -g $HOST_GID -m -s /bin/bash builder
 fi
 
-if ! id -u builder > /dev/null 2>&1; then
-    useradd -u "$USER_ID" -g "$GROUP_ID" -m builder
-fi
-
-# Fix permissions
+# Ensure permissions
 chown -R builder:builder /work
 
-export TERM=xterm-256color
-export LC_ALL=en_US.UTF-8
-export LANG=en_US.UTF-8
-
-# Switch to builder and run the command passed from docker run
+# Switch to 'builder' user and run the command
 exec gosu builder "$@"
