@@ -19,10 +19,10 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 SERVER_PORT = int(os.environ.get("WEB_PORT", 5000))
 WORK_DIR = "/work"
 REGISTRY_FILE = os.path.join(WORK_DIR, "projects_registry.yaml")
-
 YOCTO_BASE = os.path.join(WORK_DIR, "meta-qcom-builds")
 UPSTREAM_BASE = os.path.join(WORK_DIR, "upstream-builds")
 TOOLS_DIR = os.path.join(WORK_DIR, "common_tools")
+
 BUILD_STATES = {}
 
 # --- HELPERS ---
@@ -78,6 +78,7 @@ def sync_registry():
 
     scan_dir(YOCTO_BASE, 'yocto')
     scan_dir(UPSTREAM_BASE, 'upstream')
+    
     with open(REGISTRY_FILE, "w") as f: yaml.dump(reg, f)
     return reg
 
@@ -113,7 +114,7 @@ def run_build_task(cmd, name):
     p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
     os.close(slave)
     BUILD_STATES[name]['pid'] = p.pid
-
+    
     while True:
         try:
             data = os.read(master, 1024)
@@ -122,6 +123,7 @@ def run_build_task(cmd, name):
             BUILD_STATES[name]['logs'].append(d)
             socketio.emit('log_chunk', {'data': d}, to=name)
         except: break
+    
     p.wait()
     final_status = 'done' if p.returncode == 0 else 'failed'
     BUILD_STATES[name]['status'] = final_status
@@ -153,6 +155,7 @@ BASE_HTML = """
         .proj-pane::-webkit-scrollbar { width: 8px; }
         .proj-pane::-webkit-scrollbar-track { background: #1f2937; }
         .proj-pane::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        .card-clickable { cursor: pointer; }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col">
@@ -229,7 +232,6 @@ EXPLORER_HTML = """
             }
         }
     };
-
     // Double Click to Search
     document.getElementById('codeBlock').addEventListener('dblclick', function(e) {
         var selection = window.getSelection().toString().trim();
@@ -237,7 +239,6 @@ EXPLORER_HTML = """
             window.open('/search?project={{ project }}&q=' + encodeURIComponent(selection), '_blank');
         }
     });
-
     function enableEdit() { document.getElementById('readView').classList.add('hidden'); document.getElementById('editView').classList.remove('hidden'); document.getElementById('editBtn').classList.add('hidden'); document.getElementById('saveBtn').classList.remove('hidden'); document.getElementById('cancelBtn').classList.remove('hidden'); }
     function saveFile() {
         var content = document.getElementById('fileEditor').value;
@@ -278,7 +279,7 @@ DASHBOARD_HTML = """
         <div class="p-4 overflow-y-auto proj-pane flex-grow space-y-4">
             {% for name, data in projects.items() %}
             {% if data.get('type') == 'yocto' and states.get(name, {}).get('status') != 'deleting' %}
-            <div class="bg-gray-700 p-4 rounded border border-gray-600 hover:border-yellow-500 transition relative group">
+            <div onclick="location.href='/build/{{ name }}'" class="card-clickable bg-gray-700 p-4 rounded border border-gray-600 hover:border-yellow-500 transition relative group">
                 <div class="flex justify-between items-start">
                     <div>
                         <h4 class="font-bold text-lg text-white">{{ name }}</h4>
@@ -295,17 +296,16 @@ DASHBOARD_HTML = """
                 </div>
                 <div class="flex justify-between items-center mt-3">
                     <div class="flex space-x-2">
-                        <a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
-                        <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
+                        <a href="/build/{{ name }}" onclick="event.stopPropagation()" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
+                        <a href="/code/{{ name }}/" onclick="event.stopPropagation()" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
                     </div>
-                    <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }}?')"><i class="fas fa-trash"></i></a>
+                    <a href="/delete/{{ name }}" onclick="return confirm('Delete {{ name }}?'); event.stopPropagation()" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition"><i class="fas fa-trash"></i></a>
                 </div>
             </div>
             {% endif %}
             {% endfor %}
         </div>
     </div>
-
     <!-- Upstream Pane -->
     <div class="w-full md:w-1/2 flex flex-col bg-gray-800 rounded-lg shadow-lg border border-gray-700">
         <div class="p-4 border-b border-gray-700 bg-gray-900 rounded-t-lg">
@@ -314,7 +314,7 @@ DASHBOARD_HTML = """
         <div class="p-4 overflow-y-auto proj-pane flex-grow space-y-4">
             {% for name, data in projects.items() %}
             {% if data.get('type') == 'upstream' and states.get(name, {}).get('status') != 'deleting' %}
-            <div class="bg-gray-700 p-4 rounded border border-gray-600 hover:border-blue-400 transition relative group">
+            <div onclick="location.href='/build/{{ name }}'" class="card-clickable bg-gray-700 p-4 rounded border border-gray-600 hover:border-blue-400 transition relative group">
                 <div class="flex justify-between items-start">
                     <div>
                         <h4 class="font-bold text-lg text-white">{{ name }}</h4>
@@ -331,10 +331,10 @@ DASHBOARD_HTML = """
                 </div>
                 <div class="flex justify-between items-center mt-3">
                     <div class="flex space-x-2">
-                        <a href="/build/{{ name }}" class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
-                        <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
+                        <a href="/build/{{ name }}" onclick="event.stopPropagation()" class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs uppercase font-bold"><i class="fas fa-hammer"></i> Build</a>
+                        <a href="/code/{{ name }}/" onclick="event.stopPropagation()" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs"><i class="fas fa-code"></i></a>
                     </div>
-                    <a href="/delete/{{ name }}" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition" onclick="return confirm('Delete {{ name }}?')"><i class="fas fa-trash"></i></a>
+                    <a href="/delete/{{ name }}" onclick="return confirm('Delete {{ name }}?'); event.stopPropagation()" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition"><i class="fas fa-trash"></i></a>
                 </div>
             </div>
             {% endif %}
@@ -356,7 +356,6 @@ BUILD_CONSOLE_HTML = """
                 <a href="/" class="bg-gray-700 px-4 py-2 rounded text-white">Back</a>
             </div>
         </div>
-
         <!-- CONTROLS ROW -->
         <div class="flex flex-wrap gap-4 items-center bg-gray-900 p-3 rounded border border-gray-700">
             {% if type == 'yocto' %}
@@ -372,6 +371,19 @@ BUILD_CONSOLE_HTML = """
             </div>
             {% else %}
             <!-- UPSTREAM CONTROLS -->
+            <div class="flex flex-col border-r border-gray-600 pr-4 mr-2">
+                <label class="text-xs text-gray-400">Kernel Version</label>
+                <div class="flex space-x-1">
+                    <select id="refType" onchange="toggleRefInput()" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1">
+                        <option value="latest">Latest</option>
+                        <option value="tag">Tag</option>
+                        <option value="branch">Branch</option>
+                    </select>
+                    <input list="refData" id="refInput" class="hidden bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-40" placeholder="Search...">
+                    <datalist id="refData"></datalist>
+                </div>
+            </div>
+            
             <div class="flex flex-col">
                 <label class="text-xs text-gray-400">Image Name (Optional)</label>
                 <input type="text" id="imgName" class="bg-gray-800 text-white text-xs border border-gray-600 rounded p-1 w-32" placeholder="boot.img">
@@ -419,15 +431,13 @@ BUILD_CONSOLE_HTML = """
         </div>
     </div>
     {% endif %}
-
     <div id="terminal" class="flex-grow bg-black rounded h-[500px]"></div>
 </div>
-
 <script>
     var socket = io(); var project = '{{ project }}'; var ptype = '{{ type }}';
     var term = new Terminal({theme:{background:'#000',foreground:'#e5e5e5'}}); 
     var fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(document.getElementById('terminal')); fitAddon.fit(); 
-
+    
     socket.on('connect', function() { 
         socket.emit('join_project', {project: project}); 
         if(ptype=='upstream') { socket.emit('scan_fw', {}); socket.emit('scan_dtb', {project: project}); }
@@ -447,6 +457,14 @@ BUILD_CONSOLE_HTML = """
             msg.dtbs.forEach(d => { var opt = document.createElement('option'); opt.value = d; list.appendChild(opt); });
         }
     });
+    socket.on('git_refs', function(msg){
+        var list = document.getElementById('refData');
+        list.innerHTML = '';
+        msg.refs.forEach(r => { var opt = document.createElement('option'); opt.value = r; list.appendChild(opt); });
+        var inp = document.getElementById('refInput');
+        inp.placeholder = "Type to search...";
+        inp.disabled = false;
+    });
     socket.on('artifact_found', function(msg){
         var area = document.getElementById('artifactArea');
         var path = document.getElementById('artifactPath');
@@ -459,6 +477,20 @@ BUILD_CONSOLE_HTML = """
             area.classList.add('hidden');
         }
     });
+    
+    function toggleRefInput() {
+        var type = document.getElementById('refType').value;
+        var inp = document.getElementById('refInput');
+        if(type === 'latest') { 
+            inp.classList.add('hidden'); 
+        } else { 
+            inp.classList.remove('hidden'); 
+            inp.value = '';
+            inp.placeholder = "Loading...";
+            inp.disabled = true;
+            socket.emit('get_git_refs', {project: project, type: type});
+        }
+    }
 
     function updateUI(status){ 
         var b=document.getElementById('buildBtn'); var s=document.getElementById('stopBtn'); 
@@ -466,6 +498,7 @@ BUILD_CONSOLE_HTML = """
         if(status=='running'){ b.classList.add('hidden'); s.classList.remove('hidden'); } 
         else { b.classList.remove('hidden'); s.classList.add('hidden'); socket.emit('check_artifacts', {project: project}); }
     } 
+    
     function startBuild(){ 
         term.clear(); 
         if(ptype == 'yocto') {
@@ -475,8 +508,17 @@ BUILD_CONSOLE_HTML = """
             var fw = document.getElementById('fwTarget').value;
             var dtb = document.getElementById('dtbSelect').value;
             var img = document.getElementById('imgName').value;
+            
+            var refType = document.getElementById('refType').value;
+            var refVal = document.getElementById('refInput').value;
+            
+            if (refType !== 'latest' && !refVal) {
+                alert("Please select a " + refType);
+                return;
+            }
+
             if(!fw || fw === 'loading') fw = 'sa8775p';
-            socket.emit('start_build', {project: project, fw_target: fw, dtb: dtb, img_name: img});
+            socket.emit('start_build', {project: project, fw_target: fw, dtb: dtb, img_name: img, git_ref_type: refType, git_ref_val: refVal});
         }
     } 
     function stopBuild(){ socket.emit('stop_build',{project:project}); }
@@ -566,6 +608,7 @@ def create_step2_action():
         ci_path = os.path.join(repo_path, "ci")
         boards = [f for f in os.listdir(ci_path) if f.endswith('.yml')] if os.path.exists(ci_path) else []
         boards.sort()
+    
     pct, free = get_disk_usage()
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, body_content=render_template_string(CREATE_STEP2_HTML, project=name, type=ptype, boards=boards))
 
@@ -580,6 +623,7 @@ def finish_create():
         cfg['kas_files'] = f"meta-qcom/ci/{request.form['board']}"
         cfg['image'] = "qcom-multimedia-image"
     else: cfg['kernel_repo'] = request.form['kernel_repo']
+    
     with open(os.path.join(proj_path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
     sync_registry()
     return redirect('/')
@@ -718,19 +762,47 @@ def handle_check_artifacts(data):
         img = find_yocto_image(path, machine)
         if img:
             found = True; filename = os.path.relpath(img, path); abs_p = img
-
+    
     socketio.emit('artifact_found', {'found': found, 'path': abs_p, 'filename': filename}, to=name)
+
+@socketio.on('get_git_refs')
+def handle_get_refs(data):
+    name = data.get('project')
+    rtype = data.get('type') # 'branch' or 'tag'
+    path, cfg = get_config(name)
+    repo = cfg.get('kernel_repo')
+    
+    refs = []
+    if repo:
+        cmd_arg = "--heads" if rtype == 'branch' else "--tags"
+        try:
+            # Run git ls-remote to get refs without full clone
+            out = subprocess.check_output(["git", "ls-remote", cmd_arg, repo], text=True, timeout=10)
+            for line in out.splitlines():
+                parts = line.split('\t')
+                if len(parts) > 1:
+                    ref = parts[1]
+                    # Clean up ref name (refs/heads/master -> master)
+                    clean_ref = ref.replace('refs/heads/', '').replace('refs/tags/', '')
+                    # Filter out funky refs
+                    if not clean_ref.endswith('^{}'): 
+                        refs.append(clean_ref)
+        except Exception as e:
+            refs = [f"Error fetching refs: {e}"]
+            
+    emit('git_refs', {'refs': sorted(refs)})
 
 @socketio.on('start_build')
 def handle_build(data):
     name = data['project']
     path, cfg = get_config(name)
     ptype = cfg.get('type', 'yocto')
-
+    
     if ptype == 'yocto':
         topo = data.get('topology', 'ASOC')
         cfg['topology'] = topo
         with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
+        
         distro = 'meta-qcom/ci/qcom-distro-prop-image.yml' if topo == 'AudioReach' else 'meta-qcom/ci/qcom-distro.yml'
         kas_args = f"{cfg.get('kas_files')}:{distro}"
         cmd = f"kas shell {kas_args} -c 'bitbake {cfg.get('image')}'"
@@ -739,23 +811,51 @@ def handle_build(data):
         fw_target = data.get('fw_target', 'sa8775p')
         dtb_name = data.get('dtb', 'lemans-evk.dtb')
         img_name = data.get('img_name', '').strip()
+        
+        # New Git Params
+        git_ref_type = data.get('git_ref_type', 'latest')
+        git_ref_val = data.get('git_ref_val', '')
+        
         if not img_name: img_name = 'boot.img'
         
         # Save image name to config for artifact checking
         cfg['target_image'] = img_name
         with open(os.path.join(path, "config.yaml"), "w") as f: yaml.dump(cfg, f)
-
+        
         repo = cfg.get('kernel_repo')
         mkboot = os.path.join(TOOLS_DIR, "mkbootimg", "mkbootimg.py")
         initramfs = os.path.join(TOOLS_DIR, "initramfs-test.cpio.gz")
         fw_src = os.path.join(TOOLS_DIR, "linux-firmware", "qcom", fw_target)
         
+        # Construct Script
         script = [
             f"echo '--- UPSTREAM BUILD STARTED FOR {name} ---'",
             f"echo 'Target Firmware: {fw_target}'",
             f"echo 'Output Image: {img_name}'",
-            f"if [ ! -d 'linux' ]; then echo '>> Cloning Kernel...'; git clone --depth 1 {repo} linux; fi",
-            "cd linux",
+            f"echo 'Kerne Version: {git_ref_type.upper()} {git_ref_val}'"
+        ]
+        
+        # Handle Git Fetch/Checkout
+        # We assume if the folder exists, we might need to fetch new refs
+        script.append(f"if [ ! -d 'linux' ]; then echo '>> Cloning Kernel...'; git clone {repo} linux; fi")
+        script.append("cd linux")
+        
+        if git_ref_type != 'latest' and git_ref_val:
+            script.append("echo '>> Fetching updates...'")
+            script.append("git fetch --all")
+            script.append(f"echo '>> Checking out {git_ref_val}...'")
+            script.append(f"git checkout {git_ref_val}")
+            # If it's a branch, pull latest, if tag, just stay
+            if git_ref_type == 'branch':
+                script.append(f"git pull origin {git_ref_val}")
+        else:
+            # Default behavior: checkout default branch (HEAD)
+            script.append("echo '>> Using Latest (Default Branch)...'")
+            # Try to get default branch name
+            script.append("git checkout $(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5) || true")
+            script.append("git pull")
+            
+        script.extend([
             "mkdir -p modules_dir firmwares_dir test_utils",
             "export ARCH=arm64",
             "export CROSS_COMPILE=aarch64-linux-gnu-",
@@ -780,7 +880,8 @@ def handle_build(data):
             "echo '>> Generating Boot Image...'",
             f"python3 {mkboot} --kernel arch/arm64/boot/Image.gz --cmdline 'root=/dev/ram0 console=tty0 console=ttyMSM0,115200n8 clk_ignore_unused pd_ignore_unused' --ramdisk final-initramfs.cpio.gz --dtb arch/arm64/boot/dts/qcom/{dtb_name} --pagesize 2048 --header_version 2 --output ../{img_name}",
             f"echo '--- SUCCESS: {img_name} created ---'"
-        ]
+        ])
+        
         threading.Thread(target=run_build_task, args=(" && ".join(script), name)).start()
 
 @socketio.on('clean_build')
