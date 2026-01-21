@@ -1,28 +1,28 @@
 #!/bin/bash
-set -e
 
-# Default to 1000 if not set
-HOST_UID=${HOST_UID:-1000}
-HOST_GID=${HOST_GID:-1000}
+# Defaults
+USER_ID=${HOST_UID:-1000}
+GROUP_ID=${HOST_GID:-1000}
 
-echo ">> Configuring container for UID: $HOST_UID / GID: $HOST_GID"
+echo ">> Configuring container for UID: $USER_ID / GID: $GROUP_ID"
 
-# Handle Group
-if getent group builder > /dev/null 2>&1; then
-    groupmod -g $HOST_GID builder
-else
-    groupadd -g $HOST_GID builder
+# 1. Create Group if missing
+if ! getent group $GROUP_ID >/dev/null; then
+    groupadd -g $GROUP_ID builder
 fi
 
-# Handle User
-if id -u builder > /dev/null 2>&1; then
-    usermod -u $HOST_UID -g $HOST_GID builder
+# 2. Create User if missing
+if ! getent passwd $USER_ID >/dev/null; then
+    useradd -u $USER_ID -g $GROUP_ID -m -s /bin/bash builder
 else
-    useradd -u $HOST_UID -g $HOST_GID -m -s /bin/bash builder
+    # If user exists (e.g. ubuntu), modify it
+    usermod -u $USER_ID -g $GROUP_ID builder 2>/dev/null || true
 fi
 
-# Ensure permissions
-chown -R builder:builder /work
+# 3. FIX: DO NOT chown /work recursively. It hangs on Yocto builds.
+# Only fix the home directory permissions
+chown -R $USER_ID:$GROUP_ID /home/builder
 
-# Switch to 'builder' user and run the command
-exec gosu builder "$@"
+# 4. Execute the command as the user
+export HOME=/home/builder
+exec /usr/sbin/gosu $USER_ID:$GROUP_ID "$@"

@@ -2,7 +2,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies (Yocto + Upstream Kernel)
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     locales git python3 python3-pip curl wget sudo zstd file libtinfo5 \
     gcc-aarch64-linux-gnu build-essential flex bison libssl-dev bc \
@@ -13,17 +13,19 @@ RUN apt-get update && apt-get install -y \
 RUN locale-gen en_US.UTF-8
 ENV LANG='en_US.UTF-8' LANGUAGE='en_US:en' LC_ALL='en_US.UTF-8'
 
-# Allow pip to install globally in newer Python versions
+# Allow pip to install globally
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Python dependencies
-RUN pip3 install kas flask flask-socketio pyyaml eventlet
+# Install Python dependencies + QGenie SDK
+RUN pip3 install kas flask flask-socketio pyyaml eventlet \
+    && pip3 install "qgenie-sdk[all]" -i https://devpi.qualcomm.com/qcom/dev/+simple --trusted-host devpi.qualcomm.com
 
-# Create builder user (standard uid, will be modified by entrypoint)
+# Expose the web port
+EXPOSE 5000
+
+# Create builder user
 RUN useradd -m -s /bin/bash builder
 
-# CRITICAL: We stay as ROOT here so entrypoint.sh can change UIDs.
-# The entrypoint will switch to 'builder' user before running the app.
 WORKDIR /work
 COPY entrypoint.sh /entrypoint.sh
 COPY web_manager.py /web_manager.py
