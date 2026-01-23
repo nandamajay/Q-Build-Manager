@@ -1,34 +1,26 @@
 #!/bin/bash
+set -e
 
-# Defaults
-USER_ID=${HOST_UID:-1000}
-GROUP_ID=${HOST_GID:-1000}
+# 1. Update UID/GID to match the Host User (avoids permission errors)
+# We use '|| true' to suppress errors if the ID already exists
+if [ ! -z "$HOST_UID" ] && [ ! -z "$HOST_GID" ]; then
+    groupmod -o -g "$HOST_GID" builder 2>/dev/null || true
+    usermod -o -u "$HOST_UID" -g "$HOST_GID" builder 2>/dev/null || true
+fi
 
-echo ">> Configuring container for UID: $USER_ID / GID: $GROUP_ID"
+# 2. Fix permissions for the /work directory
+chown -R builder:builder /work 2>/dev/null || true
 
-# 1. Handle Group
-# If the group 'builder' already exists, modify its GID to match the host
-if getent group builder >/dev/null; then
-    groupmod -g $GROUP_ID builder
+# 3. Drop privileges and run the command (python3 web_manager.py)
+# 'gosu' swaps from root -> builder user
+if [ "${1:0:1}" = '-' ]; then
+    set -- gosu builder "$@"
 else
-    # Otherwise, create it if the GID isn't taken by someone else
-    if ! getent group $GROUP_ID >/dev/null; then
-        groupadd -g $GROUP_ID builder
+    # Check if we are running python, if so run as builder
+    if [[ "$1" == "python"* ]]; then
+        exec gosu builder "$@"
+    else
+        # Allow running other commands (like bash) as passed
+        exec "$@"
     fi
 fi
-
-# 2. Handle User
-if id builder >/dev/null 2>&1; then
-    # User exists, modify UID and GID
-    usermod -u $USER_ID -g $GROUP_ID builder
-else
-    # Create user if it doesn't exist
-    useradd -u $USER_ID -g $GROUP_ID -m -s /bin/bash builder
-fi
-
-# 3. Permissions
-chown -R $USER_ID:$GROUP_ID /home/builder
-
-# 4. Execute
-export HOME=/home/builder
-exec /usr/sbin/gosu $USER_ID:$GROUP_ID "$@"
