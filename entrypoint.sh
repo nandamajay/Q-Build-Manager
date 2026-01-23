@@ -6,23 +6,29 @@ GROUP_ID=${HOST_GID:-1000}
 
 echo ">> Configuring container for UID: $USER_ID / GID: $GROUP_ID"
 
-# 1. Create Group if missing
-if ! getent group $GROUP_ID >/dev/null; then
-    groupadd -g $GROUP_ID builder
-fi
-
-# 2. Create User if missing
-if ! getent passwd $USER_ID >/dev/null; then
-    useradd -u $USER_ID -g $GROUP_ID -m -s /bin/bash builder
+# 1. Handle Group
+# If the group 'builder' already exists, modify its GID to match the host
+if getent group builder >/dev/null; then
+    groupmod -g $GROUP_ID builder
 else
-    # If user exists (e.g. ubuntu), modify it
-    usermod -u $USER_ID -g $GROUP_ID builder 2>/dev/null || true
+    # Otherwise, create it if the GID isn't taken by someone else
+    if ! getent group $GROUP_ID >/dev/null; then
+        groupadd -g $GROUP_ID builder
+    fi
 fi
 
-# 3. FIX: DO NOT chown /work recursively. It hangs on Yocto builds.
-# Only fix the home directory permissions
+# 2. Handle User
+if id builder >/dev/null 2>&1; then
+    # User exists, modify UID and GID
+    usermod -u $USER_ID -g $GROUP_ID builder
+else
+    # Create user if it doesn't exist
+    useradd -u $USER_ID -g $GROUP_ID -m -s /bin/bash builder
+fi
+
+# 3. Permissions
 chown -R $USER_ID:$GROUP_ID /home/builder
 
-# 4. Execute the command as the user
+# 4. Execute
 export HOME=/home/builder
 exec /usr/sbin/gosu $USER_ID:$GROUP_ID "$@"

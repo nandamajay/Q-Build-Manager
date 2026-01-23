@@ -74,6 +74,7 @@ while true; do
                 -p $WEB_PORT:$WEB_PORT \
                 -v $(pwd)/work:/work \
                 -v $(pwd)/$WEB_SCRIPT:/work/$WEB_SCRIPT \
+		-v $(pwd)/editor_manager.py:/work/editor_manager.py \
                 -e HOST_UID=$(id -u) \
                 -e HOST_GID=$(id -g) \
                 -e WEB_PORT=$WEB_PORT \

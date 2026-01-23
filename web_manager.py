@@ -11,6 +11,7 @@ import re
 import datetime
 import json
 from flask import Flask, render_template_string, request, redirect, abort, jsonify, send_file
+from editor_manager import editor_bp 
 from flask_socketio import SocketIO, emit, join_room
 
 # --- CONFIGURATION ---
@@ -32,6 +33,7 @@ except ImportError:
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
+app.register_blueprint(editor_bp)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 BUILD_STATES = {}
@@ -694,7 +696,7 @@ EXPLORER_HTML = """
             <div class="flex space-x-2 items-center">
                 <span class="text-xs text-gray-500 mr-2"><i class="fas fa-mouse-pointer"></i> Double-click to search</span>
                 {% if is_file %}
-                <button class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs" id="editBtn" onclick="enableEdit()"><i class="fas fa-pen mr-1"></i> Edit</button>
+                <button class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs" id="editBtn" onclick="window.open(window.location.pathname.replace('/code/', '/editor/view/'), '_blank')"><i class="fas fa-code mr-1"></i> Pro Editor</button>
                 <button class="hidden bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-white text-xs" id="saveBtn" onclick="saveFile()"><i class="fas fa-save mr-1"></i> Save</button>
                 <button class="hidden bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-white text-xs" id="cancelBtn" onclick="location.reload()">Cancel</button>
                 {% endif %}
