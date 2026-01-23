@@ -75,6 +75,7 @@ while true; do
                 -v $(pwd)/work:/work \
                 -v $(pwd)/$WEB_SCRIPT:/work/$WEB_SCRIPT \
 		-v $(pwd)/editor_manager.py:/work/editor_manager.py \
+		-v $(pwd)/ai_helper.py:/work/ai_helper.py \
                 -e HOST_UID=$(id -u) \
                 -e HOST_GID=$(id -g) \
                 -e WEB_PORT=$WEB_PORT \

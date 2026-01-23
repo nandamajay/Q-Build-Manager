@@ -10,6 +10,7 @@ import time
 import re
 import datetime
 import json
+import ai_helper
 from flask import Flask, render_template_string, request, redirect, abort, jsonify, send_file
 from editor_manager import editor_bp 
 from flask_socketio import SocketIO, emit, join_room
@@ -122,70 +123,6 @@ def find_yocto_image(path, machine):
 def background_delete(path, name):
     try: shutil.rmtree(path)
     except: pass
-
-# --- QGENIE AI HANDLER (UPDATED) ---
-def ask_qgenie_agent(project, question, context_logs="", file_data=None):
-    # Determine Context
-    if project and project != "GLOBAL":
-        path, cfg = get_config(project)
-        history_file = os.path.join(path, "qgenie_history.json") if path else "global_chat_history.json"
-        system_context = f"You are QGenie. Project: {project}. Type: {cfg.get('type', 'Unknown')}."
-    else:
-        history_file = os.path.join(WORK_DIR, "global_chat_history.json")
-        system_context = "You are QGenie, a general AI assistant for Qualcomm Q-Build Manager."
-
-    # 1. Load History
-    history = []
-    if os.path.exists(history_file):
-        try:
-            with open(history_file, 'r') as f: history = json.load(f)
-        except: pass
-    
-    # 2. Check Prerequisites
-    api_key = os.environ.get("QGENIE_API_KEY", "")
-    has_valid_key = api_key and "paste_your_key" not in api_key and "placeholder" not in api_key and len(api_key) > 5
-    can_run_ai = QGENIE_AVAILABLE and has_valid_key
-
-    # 3. Construct Prompt with Attachment
-    user_prompt = question
-    if file_data:
-        user_prompt += f"\n\n[ATTACHED FILE: {file_data['name']}]\nCONTENT:\n```\n{file_data['content']}\n```\n"
-
-    if context_logs:
-        system_context += f"\n\nRECENT LOGS:\n{context_logs}"
-
-    # 4. Execute
-    if not can_run_ai:
-        response_text = "⚠️ **AI Mode Unavailable**\n"
-        if not QGENIE_AVAILABLE: response_text += "(SDK not installed)\n"
-        elif not has_valid_key: response_text += "(Invalid API Key in run.sh)\n"
-        response_text += "\n**Simulation:** I received your message."
-        if file_data: response_text += f" (Attached: {file_data['name']})"
-    else:
-        try:
-            client = QGenieClient()
-            messages = [ChatMessage(role="system", content=system_context)]
-            for h in history[-4:]: 
-                messages.append(ChatMessage(role="user", content=h['user']))
-                messages.append(ChatMessage(role="assistant", content=h['bot']))
-            messages.append(ChatMessage(role="user", content=user_prompt))
-            
-            resp = client.chat(messages=messages)
-            response_text = resp.first_content
-        except Exception as e:
-            err_str = str(e)
-            if "API key" in err_str: response_text = "❌ **API Key Error**: Please check `run.sh`."
-            else: response_text = f"❌ API Error: {err_str}"
-
-    # 5. Save History (Truncate huge files in history)
-    hist_q = question + (f" [Attached: {file_data['name']}]" if file_data else "")
-    history.append({'user': hist_q, 'bot': response_text})
-    if len(history) > 20: history = history[-20:]
-    try:
-        with open(history_file, 'w') as f: json.dump(history, f)
-    except: pass
-    
-    return response_text
 
 def run_build_task(cmd, name):
     BUILD_STATES[name] = {'status': 'running', 'logs': [], 'pid': None}
@@ -967,15 +904,36 @@ def build_page(name):
     return render_template_string(BASE_HTML, disk_pct=pct, disk_free=free, project=name, body_content=render_template_string(BUILD_CONSOLE_HTML, project=name, type=ptype))
 
 # --- CHAT API (WITH FILE SUPPORT) ---
+# --- CHAT API ---
 @app.route('/chat_api', methods=['POST'])
 def chat_api():
     data = request.get_json()
     project = data.get('project', 'GLOBAL')
     question = data.get('question', '')
-    context = data.get('context', '')
+    context_logs = data.get('context', '')
     file_data = data.get('file', None)
+
+    # 1. Determine Paths & Context
+    history_file = os.path.join(WORK_DIR, "global_chat_history.json")
+    system_context = "You are QGenie, a helper for Qualcomm Q-Build Manager."
+
+    if project and project != "GLOBAL":
+        path, cfg = get_config(project)
+        if path:
+            history_file = os.path.join(path, "qgenie_history.json")
+            system_context = f"You are QGenie. Project: {project}. Type: {cfg.get('type', 'Unknown')}."
     
-    resp = ask_qgenie_agent(project, question, context, file_data)
+    # This was likely the line causing the Syntax Error:
+    if context_logs:
+        system_context += f"\n\nRECENT LOGS:\n{context_logs}"
+
+    # 2. Call the Shared Helper
+    # Ensure ai_helper is imported at the top of the file!
+    try:
+        resp = ai_helper.chat_with_history(history_file, system_context, question, file_data)
+    except Exception as e:
+        resp = f"Error calling AI Helper: {str(e)}"
+    
     return jsonify({'response': resp})
 
 @app.route('/chat_history/<project>')
