@@ -62,11 +62,26 @@ IDE_HTML = """
         #terminal-panel { height: 30%; background: #1e1e1e; border-top: 1px solid var(--accent); display: none; flex-direction: column; }
         #xterm-container { flex: 1; overflow: hidden; }
 
-        /* CHAT SIDEBAR */
-        #chat-panel { width: 350px; background: #1f1f1f; border-left: 1px solid var(--border); display: none; flex-direction: column; transition: width 0.3s ease; }
+        /* CHAT SIDEBAR (Modern) */
+        #chat-panel { width: 350px; background: #202124; border-left: 1px solid var(--border); display: none; flex-direction: column; transition: width 0.3s ease; }
         #chat-panel.active { display: flex; }
-        #chat-panel.wide { width: 50%; }
-        #chat-panel.full { width: 75%; }
+        #chat-panel.wide { width: 25%; }
+        #chat-panel.full { width: 50%; }
+        
+        .chat-header { padding: 10px 15px; background: #2d2d2d; border-bottom: 1px solid #3e3e42; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        .chat-msgs { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px; background: #1e1e1e; }
+        
+        /* Message Bubbles */
+        .msg-row { display: flex; gap: 10px; max-width: 100%; }
+        .msg-row.user { justify-content: flex-end; }
+        
+        .avatar { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+        .avatar.bot { background: #e65100; color: white; }
+        .avatar.user { background: #1976d2; color: white; }
+        
+        .msg-bubble { padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.4; max-width: 80%; word-wrap: break-word; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+        .msg-row.bot .msg-bubble { background: #333; color: #e0e0e0; border-top-left-radius: 2px; }
+        .msg-row.user .msg-bubble { background: linear-gradient(135deg, #007acc, #005f9e); color: white; border-top-right-radius: 2px; }
         
         /* MODALS */
         .modal { position: absolute; top: 10%; left: 50%; transform: translateX(-50%); background: #252526; border: 1px solid var(--accent); z-index: 999; display: none; padding: 15px; box-shadow: 0 0 15px rgba(0,0,0,0.5); flex-direction: column; }
@@ -147,7 +162,8 @@ IDE_HTML = """
                     <input id="commit-msg" placeholder="Message..." style="width:100%; padding:4px; background:#333; border:1px solid #555; color:white; font-size:12px;"/>
                     <button class="tool-btn primary" onclick="gitCommit()">Commit</button>
                     
-                    <div style="font-size:11px; font-weight:bold; color:#888; margin-top:10px;">PATCHING</div>
+                    <div style="font-size:11px; font-weight:bold; color:#888; margin-top:10px;">TOOLS</div>
+                    <button class="tool-btn" onclick="runGit('log --oneline --graph --decorate -n 50')">📜 History (Safe)</button>
                     <button class="tool-btn" onclick="runGit('format-patch -1 HEAD')">📤 Create Patch</button>
                     <button class="tool-btn" onclick="promptApply()">📥 Apply Patch</button>
                 </div>
@@ -158,7 +174,7 @@ IDE_HTML = """
                     
                     <div style="display:flex; margin-top:10px; gap:5px;">
                         <span style="padding:5px; background:#333; color:#aaa; font-family:monospace;">git</span>
-                        <input id="custom-git" onkeyup="if(event.key==='Enter') runCustomGit()" placeholder="checkout -b my-branch" style="flex:1; background:#222; border:1px solid #444; color:white; padding:5px; font-family:monospace;"/>
+                        <input id="custom-git" onkeyup="if(event.key==='Enter') runCustomGit()" placeholder="status" style="flex:1; background:#222; border:1px solid #444; color:white; padding:5px; font-family:monospace;"/>
                         <button class="tool-btn" onclick="runCustomGit()">Run</button>
                     </div>
                 </div>
@@ -182,20 +198,26 @@ IDE_HTML = """
         </div>
     </div>
 
-    <!-- CHAT SIDEBAR -->
+    <!-- CHAT SIDEBAR (Enhanced) -->
     <div id="chat-panel">
         <div class="chat-header">
-            <span>QGenie Chat</span>
+            <span><i class="fas fa-robot"></i> QGenie Chat</span>
             <div style="display:flex; gap:10px;">
                 <i class="fas fa-arrows-alt-h" onclick="toggleChatWidth()" title="Expand/Collapse" style="cursor:pointer; color:#aaa;"></i>
                 <i class="fas fa-times" onclick="toggleChat()" style="cursor:pointer; color:#aaa;"></i>
             </div>
         </div>
         <div class="chat-msgs" id="chat-msgs">
-            <div class="msg bot">Hi! Paste a build error, and I'll find the line for you.</div>
+            <div class="msg-row bot">
+                <div class="avatar bot"><i class="fas fa-robot"></i></div>
+                <div class="msg-bubble">Hi! Paste a build error, and I'll find the line for you.</div>
+            </div>
         </div>
-        <div style="padding:10px; border-top:1px solid #3e3e42;">
-            <input id="chat-input" onkeyup="if(event.key==='Enter') sendChat()" placeholder="Type or paste error..." style="width:100%; padding:5px; background:#333; border:1px solid #555; color:white;"/>
+        <div style="padding:15px; background:#2d2d2d; border-top:1px solid #3e3e42;">
+            <div style="display:flex; gap:5px;">
+                <input id="chat-input" onkeyup="if(event.key==='Enter') sendChat()" placeholder="Type or paste error..." style="flex:1; padding:8px; background:#333; border:1px solid #555; color:white; border-radius:4px;"/>
+                <button onclick="sendChat()" style="background:var(--accent); border:none; color:white; width:35px; border-radius:4px;"><i class="fas fa-paper-plane"></i></button>
+            </div>
         </div>
     </div>
 </div>
@@ -210,7 +232,7 @@ IDE_HTML = """
     var project = "{{ project }}";
     var currentPath = {{ initial_file | tojson }};
     var currentDir = ""; 
-    var editor, term, lintTimer;
+    var editor, term;
 
     // --- MONACO SETUP ---
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
@@ -233,14 +255,12 @@ IDE_HTML = """
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
     });
 
-    // --- FILE TREE & CREATION ---
+    // --- FILE TREE ---
     function refreshTree(path) {
         if(path === undefined) path = currentDir;
         currentDir = path;
-        
         var c = document.getElementById('file-tree');
         c.innerHTML = '<div style="padding:5px; color:#aaa;">Loading...</div>';
-
         fetch('/editor/api/tree?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path))
         .then(r=>r.json()).then(nodes => {
             c.innerHTML = "";
@@ -306,12 +326,8 @@ IDE_HTML = """
     // --- GIT FUNCTIONS ---
     function toggleGit() {
         var m = document.getElementById('git-modal');
-        if (m.style.display === 'none') {
-            m.style.display = 'flex';
-            runGit('status'); 
-        } else {
-            m.style.display = 'none';
-        }
+        if (m.style.display === 'none') { m.style.display = 'flex'; runGit('status'); } 
+        else { m.style.display = 'none'; }
     }
 
     function configureGit() {
@@ -319,8 +335,6 @@ IDE_HTML = """
         if (!name) return;
         var email = prompt("Enter Git Email:");
         if (!email) return;
-        
-        // Execute both commands in background
         runGit(`config --global user.name "${name}"`);
         setTimeout(() => runGit(`config --global user.email "${email}"`), 500);
         setTimeout(() => runGit(`config --global --add safe.directory "*"`), 1000);
@@ -339,7 +353,7 @@ IDE_HTML = """
         }).then(r => r.json()).then(d => {
             if(!d.output.trim()) d.output = "Done (No output returned)";
             out.innerText += "\\n" + d.output;
-            out.scrollTop = out.scrollHeight; // Auto-scroll to bottom
+            out.scrollTop = out.scrollHeight;
             if(args.includes('format-patch')) refreshTree();
         });
     }
@@ -404,13 +418,18 @@ IDE_HTML = """
         var i = document.getElementById('chat-input');
         var txt = i.value; if(!txt) return;
         var b = document.getElementById('chat-msgs');
-        b.innerHTML += '<div class="msg user">'+txt+'</div>';
+        
+        var userHtml = '<div class="msg-row user"><div class="msg-bubble">'+txt+'</div><div class="avatar user"><i class="fas fa-user"></i></div></div>';
+        b.innerHTML += userHtml;
         i.value = '';
+        b.scrollTop = b.scrollHeight;
+
         fetch('/editor/api/chat_context', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ project:project, message:txt, code_context:editor.getValue(), current_file:currentPath })
         }).then(r=>r.json()).then(d=>{
-            b.innerHTML += '<div class="msg bot">'+d.response+'</div>';
+            var botHtml = '<div class="msg-row bot"><div class="avatar bot"><i class="fas fa-robot"></i></div><div class="msg-bubble">'+d.response+'</div></div>';
+            b.innerHTML += botHtml;
             b.scrollTop = b.scrollHeight;
         });
     }
@@ -455,11 +474,9 @@ IDE_HTML = """
 
 # --- HELPERS ---
 def find_git_root(start_path):
-    """Walk up from start_path to find .git directory"""
     path = os.path.abspath(start_path)
     while path != '/':
-        if os.path.isdir(os.path.join(path, '.git')):
-            return path
+        if os.path.isdir(os.path.join(path, '.git')): return path
         path = os.path.dirname(path)
     return None
 
@@ -490,7 +507,7 @@ def chat_context():
         sys_prompt = (
             f"You are a coding assistant. Context File: {d.get('current_file')}\n"
             f"Code Content (Partial):\n{d.get('code_context')[:5000]}\n\n"
-            "Task: Answer the user's question or analyze the error.\n"
+            "Task: Answer the user's question or analyze the error."
         )
         r = QGenieClient().chat(messages=[
             ChatMessage(role="system", content=sys_prompt),
@@ -554,42 +571,28 @@ def term():
     cwd = r
     if 'path' in d and d['path']:
         full_path = os.path.join(r, d['path'])
-        if os.path.isfile(full_path):
-            cwd = os.path.dirname(full_path)
-        elif os.path.isdir(full_path):
-            cwd = full_path
+        if os.path.isfile(full_path): cwd = os.path.dirname(full_path)
+        elif os.path.isdir(full_path): cwd = full_path
 
-    # 2. IF GIT COMMAND, SEARCH FOR REAL GIT ROOT (FIX 128)
+    # 2. IF GIT COMMAND, SEARCH FOR REAL GIT ROOT
     if d['cmd'].strip().startswith('git '):
         git_root = find_git_root(cwd)
-        if git_root:
-            cwd = git_root
+        if git_root: cwd = git_root
 
     try:
-        # FORCE GIT TO AVOID PAGER (prevents hangs)
+        # 3. FORCE GIT TO AVOID PAGER
         env = os.environ.copy()
         env['GIT_PAGER'] = 'cat'
-
-        # Use subprocess.run to capture stderr and avoid crashes on non-utf8 chars
+        
         res = subprocess.run(
-            d['cmd'], 
-            shell=True, 
-            cwd=cwd, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.STDOUT, # Combine stdout/stderr
-            env=env
+            d['cmd'], shell=True, cwd=cwd, 
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
         )
-        
-        # KEY FIX: errors='replace' prevents 0xf6 crash
+        # 4. UTF-8 REPLACE ERROR
         output = res.stdout.decode('utf-8', errors='replace')
-        
-        if res.returncode != 0:
-            return jsonify({'output': f"COMMAND FAILED (Exit {res.returncode}):\n{output}"})
-            
+        if res.returncode != 0: return jsonify({'output': f"COMMAND FAILED (Exit {res.returncode}):\n{output}"})
         return jsonify({'output': output})
-
-    except Exception as e: 
-        return jsonify({'output': f"Execution Error: {str(e)}"})
+    except Exception as e: return jsonify({'output': f"Execution Error: {str(e)}"})
 
 @editor_bp.route('/editor/api/create', methods=['POST'])
 def create_item():
@@ -597,21 +600,14 @@ def create_item():
     project = d.get('project')
     rel_path = d.get('path')
     item_type = d.get('type')
-    
     root, _ = get_config_safe(project)
     if not root: return jsonify({'error': 'Project not found'})
-    
     abs_path = os.path.abspath(os.path.join(root, rel_path))
-    if not abs_path.startswith(root):
-        return jsonify({'error': 'Invalid path security'})
-
+    if not abs_path.startswith(root): return jsonify({'error': 'Invalid path security'})
     try:
-        if item_type == 'dir':
-            os.makedirs(abs_path, exist_ok=True)
+        if item_type == 'dir': os.makedirs(abs_path, exist_ok=True)
         else:
             if not os.path.exists(abs_path):
                 with open(abs_path, 'w') as f: pass 
-    except Exception as e:
-        return jsonify({'error': str(e)})
-        
+    except Exception as e: return jsonify({'error': str(e)})
     return jsonify({'status': 'ok'})
