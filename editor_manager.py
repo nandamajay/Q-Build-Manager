@@ -29,12 +29,16 @@ editor_bp = Blueprint('editor_bp', __name__)
 
 IDE_HTML = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="utf-8"/>
     <title>Pro Editor AI - {{ project }}</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/xterm.min.css" rel="stylesheet"/>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/xterm.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/addons/fit/fit.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"/>
+    
     <style>
         :root { --bg-dark: #1e1e1e; --bg-panel: #252526; --accent: #007acc; --text: #cccccc; --border: #3e3e42; }
         * { box-sizing: border-box; }
@@ -56,28 +60,16 @@ IDE_HTML = """
         #center-area { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
         #monaco-container { flex: 1; }
         #terminal-panel { height: 30%; background: #1e1e1e; border-top: 1px solid var(--accent); display: none; flex-direction: column; }
-        
-        /* CHAT SIDEBAR (RESIZABLE) */
-        #chat-panel { width: 350px; background: #1f1f1f; border-left: 1px solid var(--border); display: none; flex-direction: column; transition: width 0.2s; }
-        #chat-panel.active { display: flex; }
-        #chat-panel.w-25 { width: 25vw; }
-        #chat-panel.w-50 { width: 50vw; }
-        
-        /* ERROR GLYPH (RED CROSS) */
-        .error-glyph { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23ff5555'%3E%3Cpath d='M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 10.1l-1.4 1.4L8 9.4l-2.1 2.1-1.4-1.4L6.6 8 4.5 5.9l1.4-1.4L8 6.6l2.1-2.1 1.4 1.4L9.4 8l2.1 2.1z'/%3E%3C/svg%3E") no-repeat center center; background-size: contain; }
-        
-        /* AI JUMP HIGHLIGHT */
-        .highlight-line { background: rgba(255, 0, 0, 0.3) !important; border-top: 1px solid #ff5555; border-bottom: 1px solid #ff5555; }
+        #xterm-container { flex: 1; overflow: hidden; }
 
-        /* CHAT UI */
-        .chat-header { padding: 8px; background: #2d2d2d; border-bottom: 1px solid #3e3e42; display: flex; justify-content: space-between; align-items: center; }
-        .chat-msgs { flex: 1; overflow-y: auto; padding: 10px; font-size: 13px; }
-        .msg { margin-bottom: 8px; padding: 8px; border-radius: 4px; max-width: 90%; word-wrap: break-word; }
-        .msg.user { background: #007acc; color: white; align-self: flex-end; margin-left: auto; }
-        .msg.bot { background: #3e3e42; color: #ddd; }
+        /* CHAT SIDEBAR */
+        #chat-panel { width: 350px; background: #1f1f1f; border-left: 1px solid var(--border); display: none; flex-direction: column; transition: width 0.3s ease; }
+        #chat-panel.active { display: flex; }
+        #chat-panel.wide { width: 50%; }
+        #chat-panel.full { width: 75%; }
         
         /* MODALS */
-        .modal { position: absolute; top: 20%; left: 50%; transform: translateX(-50%); width: 400px; background: #252526; border: 1px solid var(--accent); z-index: 999; display: none; padding: 15px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+        .modal { position: absolute; top: 10%; left: 50%; transform: translateX(-50%); background: #252526; border: 1px solid var(--accent); z-index: 999; display: none; padding: 15px; box-shadow: 0 0 15px rgba(0,0,0,0.5); flex-direction: column; }
         
         /* FILE TREE */
         .t-item { padding: 2px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
@@ -86,6 +78,12 @@ IDE_HTML = """
         
         /* STATUS BAR */
         #statusbar { height: 22px; background: var(--accent); color: white; display: flex; align-items: center; padding: 0 10px; font-size: 12px; }
+        
+        /* SCROLL BARS */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #444; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
     </style>
 </head>
 <body>
@@ -93,6 +91,12 @@ IDE_HTML = """
 <div id="toolbar">
     <div style="font-weight:bold; color:#fff; margin-right:10px;">{{ project }}</div>
     <button class="tool-btn" onclick="saveFile()"><i class="fas fa-save"></i> Save</button>
+    
+    <!-- GIT BUTTON -->
+    <button class="tool-btn" onclick="toggleGit()" style="background:#f4511e; border-color:#d84315;">
+        <i class="fab fa-git-alt"></i> Git
+    </button>
+
     <div style="width:1px; height:20px; background:#555;"></div>
     
     <button class="tool-btn gen" onclick="openGenModal()"><i class="fas fa-code"></i> AI Gen</button>
@@ -106,38 +110,74 @@ IDE_HTML = """
 
 <div id="workspace">
     <div id="sidebar">
-        <!-- REPLACED HEADER (Line 110) -->
         <div style="padding:5px 10px; background:#333; font-weight:bold; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
             <span>FILES</span>
-            <div style="gap:10px; display:flex;">
-                <i class="fas fa-file-medical" title="New File" style="cursor:pointer" onclick="createItem('file')"></i>
-                <i class="fas fa-folder-plus" title="New Folder" style="cursor:pointer" onclick="createItem('dir')"></i>
-                <i class="fas fa-sync" title="Refresh" style="cursor:pointer" onclick="refreshTree()"></i>
+            <div style="gap:5px; display:flex;">
+                <i class="fas fa-file-medical" onclick="createItem('file')" style="cursor:pointer" title="New File"></i>
+                <i class="fas fa-folder-plus" onclick="createItem('dir')" style="cursor:pointer" title="New Folder"></i>
+                <i class="fas fa-sync" onclick="refreshTree()" style="cursor:pointer" title="Refresh"></i>
             </div>
         </div>
-
         <div id="file-tree" style="flex:1; overflow-y:auto;"></div>
     </div>
 
-
-    <!-- MAIN EDITOR -->
+    <!-- MAIN EDITOR AREA -->
     <div id="center-area">
         <div id="monaco-container"></div>
-        <div id="terminal-panel"><div id="xterm-container" style="flex:1;"></div></div>
+        <div id="terminal-panel"><div id="xterm-container"></div></div>
 
-        <!-- GEN CODE MODAL -->
-        <div id="gen-modal" class="modal">
+        <!-- GIT MODAL -->
+        <div class="modal" id="git-modal" style="width: 900px; height: 700px;">
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid #444; padding-bottom:10px; margin-bottom:10px;">
+                <h3 style="margin:0; color:white;"><i class="fab fa-git-alt" style="color:#f4511e"></i> Source Control</h3>
+                <div>
+                    <button class="tool-btn" onclick="configureGit()" style="display:inline-flex; padding: 2px 8px; margin-right:5px; font-size:11px;">⚙️ Setup</button>
+                    <button onclick="document.getElementById('git-modal').style.display='none'" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:16px;">X</button>
+                </div>
+            </div>
+            
+            <div style="flex:1; display:flex; gap:10px; overflow:hidden;"> 
+                <!-- Left: Actions -->
+                <div style="width: 200px; display:flex; flex-direction:column; gap:8px;">
+                    <div style="font-size:11px; font-weight:bold; color:#888;">STAGING</div>
+                    <button class="tool-btn" onclick="runGit('add .')">➕ Add All</button>
+                    <button class="tool-btn" onclick="runGit('restore --staged .')">➖ Reset All</button>
+                    
+                    <div style="font-size:11px; font-weight:bold; color:#888; margin-top:10px;">COMMIT</div>
+                    <input id="commit-msg" placeholder="Message..." style="width:100%; padding:4px; background:#333; border:1px solid #555; color:white; font-size:12px;"/>
+                    <button class="tool-btn primary" onclick="gitCommit()">Commit</button>
+                    
+                    <div style="font-size:11px; font-weight:bold; color:#888; margin-top:10px;">PATCHING</div>
+                    <button class="tool-btn" onclick="runGit('format-patch -1 HEAD')">📤 Create Patch</button>
+                    <button class="tool-btn" onclick="promptApply()">📥 Apply Patch</button>
+                </div>
+                
+                <!-- Right: Output -->
+                <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+                    <pre id="git-output" style="background:#111; color:#ddd; font-family:monospace; font-size:12px; flex:1; padding:10px; overflow-y:auto; border:1px solid #444; margin:0; white-space:pre-wrap;">// Git Output will appear here...</pre>
+                    
+                    <div style="display:flex; margin-top:10px; gap:5px;">
+                        <span style="padding:5px; background:#333; color:#aaa; font-family:monospace;">git</span>
+                        <input id="custom-git" onkeyup="if(event.key==='Enter') runCustomGit()" placeholder="checkout -b my-branch" style="flex:1; background:#222; border:1px solid #444; color:white; padding:5px; font-family:monospace;"/>
+                        <button class="tool-btn" onclick="runCustomGit()">Run</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI GEN MODAL -->
+        <div class="modal" id="gen-modal" style="width:400px; height:200px;">
             <h3 style="margin-top:0; color:white;">AI Code Gen</h3>
-            <textarea id="gen-prompt" style="width:100%; height:80px; background:#1e1e1e; color:white; border:1px solid #444;" placeholder="Describe code..."></textarea>
+            <textarea id="gen-prompt" placeholder="Describe code..." style="width:100%; height:80px; background:#1e1e1e; color:white; border:1px solid #444;"></textarea>
             <div style="margin-top:10px; text-align:right;">
-                <button onclick="document.getElementById('gen-modal').style.display='none'">Cancel</button>
-                <button onclick="submitGenCode()" style="background:var(--accent); color:white; border:none; padding:5px 10px;">Generate</button>
+                <button class="tool-btn" onclick="document.getElementById('gen-modal').style.display='none'">Cancel</button>
+                <button class="tool-btn primary" onclick="submitGenCode()">Generate</button>
             </div>
         </div>
         
         <!-- EXPLAIN MODAL -->
-        <div id="explain-modal" class="modal" style="width: 60%; max-height: 80vh; overflow-y: auto;">
-             <div style="display:flex; justify-content:space-between;"><h3 style="margin:0; color:white;">Explanation</h3> <button onclick="document.getElementById('explain-modal').style.display='none'">X</button></div>
+        <div class="modal" id="explain-modal" style="width: 60%; max-height: 80vh; overflow-y: auto;">
+             <div style="display:flex; justify-content:space-between;"><h3 style="margin:0; color:white;">Explanation</h3> <button onclick="document.getElementById('explain-modal').style.display='none'" style="cursor:pointer; background:none; border:none; color:white;">X</button></div>
              <div id="explain-content" style="white-space: pre-wrap; line-height: 1.5; margin-top:10px;"></div>
         </div>
     </div>
@@ -146,18 +186,16 @@ IDE_HTML = """
     <div id="chat-panel">
         <div class="chat-header">
             <span>QGenie Chat</span>
-            <div>
-                <button title="Default" onclick="resizeChat('')" style="font-size:10px;">D</button>
-                <button title="25%" onclick="resizeChat('w-25')" style="font-size:10px;">25%</button>
-                <button title="50%" onclick="resizeChat('w-50')" style="font-size:10px;">50%</button>
-                <i class="fas fa-times" onclick="toggleChat()" style="margin-left:5px; cursor:pointer;"></i>
+            <div style="display:flex; gap:10px;">
+                <i class="fas fa-arrows-alt-h" onclick="toggleChatWidth()" title="Expand/Collapse" style="cursor:pointer; color:#aaa;"></i>
+                <i class="fas fa-times" onclick="toggleChat()" style="cursor:pointer; color:#aaa;"></i>
             </div>
         </div>
-        <div id="chat-msgs" class="chat-msgs">
+        <div class="chat-msgs" id="chat-msgs">
             <div class="msg bot">Hi! Paste a build error, and I'll find the line for you.</div>
         </div>
         <div style="padding:10px; border-top:1px solid #3e3e42;">
-            <input id="chat-input" style="width:100%; padding:5px; background:#333; border:1px solid #555; color:white;" placeholder="Type or paste error..." onkeyup="if(event.key==='Enter') sendChat()">
+            <input id="chat-input" onkeyup="if(event.key==='Enter') sendChat()" placeholder="Type or paste error..." style="width:100%; padding:5px; background:#333; border:1px solid #555; color:white;"/>
         </div>
     </div>
 </div>
@@ -168,70 +206,34 @@ IDE_HTML = """
     <span id="cursor-pos">Ln 1, Col 1</span>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/xterm.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/addons/fit/fit.min.js"></script>
-
 <script>
     var project = "{{ project }}";
     var currentPath = {{ initial_file | tojson }};
-    var currentDir = ""; // State for current directory
+    var currentDir = ""; 
     var editor, term, lintTimer;
 
+    // --- MONACO SETUP ---
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
     require(['vs/editor/editor.main'], function () {
         editor = monaco.editor.create(document.getElementById('monaco-container'), {
             value: "// Select a file to edit",
             language: 'python',
             theme: 'vs-dark',
-            automaticLayout: true,
-            glyphMargin: true,
-            minimap: { enabled: true }
+            automaticLayout: true
         });
 
         if(currentPath && currentPath !== "None") loadFile(currentPath);
-        refreshTree(); // Initial Load
-        initTerminal();
+        refreshTree(); 
+        initTerminal(); 
 
         editor.onDidChangeCursorPosition(e => {
             document.getElementById('cursor-pos').innerText = "Ln " + e.position.lineNumber + ", Col " + e.position.column;
         });
         
-        editor.onDidChangeModelContent(() => {
-            clearTimeout(lintTimer);
-            lintTimer = setTimeout(runLinter, 800);
-        });
-        
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
     });
 
-    // --- CREATE FILE/FOLDER ---
-    function createItem(type) {
-        var name = prompt("Enter Name for new " + (type==='dir'?'Folder':'File') + ":");
-        if(!name) return;
-        
-        // Handle path logic (append to currentDir)
-        var newPath = (currentDir ? currentDir + '/' : '') + name;
-        
-        fetch('/editor/api/create', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-                project: project, 
-                path: newPath, 
-                type: type 
-            })
-        }).then(r => r.json()).then(d => {
-            if(d.error) {
-                alert("Error: " + d.error);
-            } else {
-                refreshTree(); // Reload tree to show new item
-                if(type === 'file') loadFile(newPath); // Auto-open if file
-            }
-        });
-    }
-
-    // --- FIXED FILE EXPLORER ---
+    // --- FILE TREE & CREATION ---
     function refreshTree(path) {
         if(path === undefined) path = currentDir;
         currentDir = path;
@@ -242,57 +244,52 @@ IDE_HTML = """
         fetch('/editor/api/tree?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path))
         .then(r=>r.json()).then(nodes => {
             c.innerHTML = "";
-            
-            // Add "Up" Button (..)
             if(path !== "") {
                 var up = document.createElement('div');
                 up.className = "t-item is-dir";
                 up.innerHTML = '<i class="fas fa-level-up-alt"></i> ..';
                 up.style.color = "#aaa";
-                
-                var parts = path.split('/');
-                parts.pop();
+                var parts = path.split('/'); parts.pop();
                 var parent = parts.join('/');
                 up.onclick = () => refreshTree(parent);
                 c.appendChild(up);
             }
-
             nodes.forEach(n => {
                 var d = document.createElement('div');
                 d.className = "t-item " + (n.type==='dir'?'is-dir':'');
                 d.innerText = (n.type==='dir'?'📂 ':'📄 ') + n.name;
-                
-                // CLICK HANDLER: Directories drill down, Files open
-                d.onclick = () => {
-                    if(n.type === 'dir') {
-                        refreshTree(n.path);
-                    } else {
-                        loadFile(n.path);
-                    }
-                };
+                d.onclick = () => { n.type === 'dir' ? refreshTree(n.path) : loadFile(n.path); };
                 c.appendChild(d);
             });
         });
     }
 
-    // --- FILE OPERATIONS ---
+    function createItem(type) {
+        var name = prompt("Enter Name for new " + (type==='dir'?'Folder':'File') + ":");
+        if(!name) return;
+        var newPath = (currentDir ? currentDir + '/' : '') + name;
+        fetch('/editor/api/create', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ project: project, path: newPath, type: type })
+        }).then(r => r.json()).then(d => {
+            if(d.error) alert("Error: " + d.error);
+            else { refreshTree(); if(type === 'file') loadFile(newPath); }
+        });
+    }
+
     function loadFile(path) {
         document.getElementById('status-msg').innerText = "Loading " + path + "...";
         fetch('/editor/api/read?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path))
         .then(r=>r.json()).then(d => {
-            if(d.error) { alert("Error opening file:\\n" + d.error); return; }
+            if(d.error) { alert("Error: " + d.error); return; }
             var ext = path.split('.').pop();
             var lang = 'plaintext';
-            if(ext==='py') lang='python'; if(ext==='c'||ext==='cpp') lang='cpp';
-            if(ext==='js') lang='javascript'; if(ext==='json') lang='json'; if(ext==='html') lang='html';
-            
-            editor.setModel(monaco.editor.createModel(d.content, lang));
-            currentPath = path;
-            document.getElementById('status-msg').innerText = "Opened: " + path;
-            
-            // Clear highlights
-            if(window.hlDecorations) window.hlDecorations = editor.deltaDecorations(window.hlDecorations, []);
-            runLinter();
+            if(ext==='py') lang='python'; if(ext==='js') lang='javascript';
+            if(editor) {
+                editor.setModel(monaco.editor.createModel(d.content, lang));
+                currentPath = path;
+                document.getElementById('status-msg').innerText = "Opened: " + path;
+            }
         });
     }
 
@@ -302,84 +299,85 @@ IDE_HTML = """
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({ project:project, path:currentPath, content:editor.getValue() })
         }).then(r=>r.json()).then(d => { 
-            if(d.error) alert("Save Failed: " + d.error);
-            else { document.getElementById('status-msg').innerText = "Saved"; runLinter(); }
+            document.getElementById('status-msg').innerText = d.error ? "Error: "+d.error : "Saved";
         });
     }
 
-    // --- LINTER & AI FEATURES ---
-    function runLinter() {
-        if(!currentPath) return;
-        var code = editor.getValue();
-        fetch('/editor/api/lint', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ code: code, language: editor.getModel().getLanguageId(), project: project })
-        }).then(r => r.json()).then(data => {
-            var markers = [];
-            data.errors.forEach(err => {
-                markers.push({
-                    severity: monaco.MarkerSeverity.Error,
-                    startLineNumber: err.line, startColumn: 1, endLineNumber: err.line, endColumn: 1000,
-                    message: err.message
-                });
-            });
-            monaco.editor.setModelMarkers(editor.getModel(), 'owner', markers);
-            
-            var newDecorations = data.errors.map(err => {
-                return {
-                    range: new monaco.Range(err.line, 1, err.line, 1),
-                    options: { isWholeLine: false, glyphMarginClassName: 'error-glyph', glyphMarginHoverMessage: { value: err.message } }
-                };
-            });
-            window.lintDecorations = editor.deltaDecorations(window.lintDecorations||[], newDecorations);
-
-            var badge = document.getElementById('lint-badge');
-            if(data.errors.length > 0) {
-                badge.innerHTML = '<i class="fas fa-times-circle" style="color:#ff5555"></i> ' + data.errors.length;
-                badge.style.color = "#ff5555";
-            } else {
-                badge.innerHTML = '<i class="fas fa-check-circle" style="color:#55ff55"></i> OK';
-                badge.style.color = "#aaa";
-            }
-        });
+    // --- GIT FUNCTIONS ---
+    function toggleGit() {
+        var m = document.getElementById('git-modal');
+        if (m.style.display === 'none') {
+            m.style.display = 'flex';
+            runGit('status'); 
+        } else {
+            m.style.display = 'none';
+        }
     }
 
-    function toggleChat() { document.getElementById('chat-panel').classList.toggle('active'); editor.layout(); }
-    function resizeChat(c) { document.getElementById('chat-panel').className = 'active ' + c; editor.layout(); }
-    
-    function sendChat() {
-        var i = document.getElementById('chat-input');
-        var txt = i.value; if(!txt) return;
-        var b = document.getElementById('chat-msgs');
-        b.innerHTML += '<div class="msg user">'+txt+'</div>';
-        i.value = '';
+    function configureGit() {
+        var name = prompt("Enter Git Username:");
+        if (!name) return;
+        var email = prompt("Enter Git Email:");
+        if (!email) return;
         
-        fetch('/editor/api/chat_context', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ project:project, message:txt, code_context:editor.getValue(), current_file:currentPath })
-        }).then(r=>r.json()).then(d=>{
-            var resp = d.response;
-            var jumpLine = null;
-            var match = resp.match(/<<<JUMP:(\d+)>>>/);
-            if(match) { jumpLine = parseInt(match[1]); resp = resp.replace(match[0], ''); }
-            
-            b.innerHTML += '<div class="msg bot">'+resp+'</div>';
-            b.scrollTop = b.scrollHeight;
-            
-            if(jumpLine) {
-                editor.revealLineInCenter(jumpLine);
-                editor.setPosition({lineNumber: jumpLine, column: 1});
-                var dec = { range: new monaco.Range(jumpLine,1,jumpLine,1), options: { isWholeLine:true, className:'highlight-line' } };
-                window.hlDecorations = editor.deltaDecorations(window.hlDecorations||[], [dec]);
-            }
+        // Execute both commands in background
+        runGit(`config --global user.name "${name}"`);
+        setTimeout(() => runGit(`config --global user.email "${email}"`), 500);
+        setTimeout(() => runGit(`config --global --add safe.directory "*"`), 1000);
+    }
+
+    function runGit(args) {
+        var out = document.getElementById('git-output');
+        out.innerText += `\n\n$ git ${args} ...`;
+        
+        var ctxPath = currentPath || currentDir || "";
+        
+        fetch('/editor/api/term', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ project: project, cmd: 'git ' + args, path: ctxPath })
+        }).then(r => r.json()).then(d => {
+            if(!d.output.trim()) d.output = "Done (No output returned)";
+            out.innerText += "\\n" + d.output;
+            out.scrollTop = out.scrollHeight; // Auto-scroll to bottom
+            if(args.includes('format-patch')) refreshTree();
         });
+    }
+
+    function gitCommit() {
+        var msg = document.getElementById('commit-msg').value;
+        if (!msg) { alert("Enter a commit message"); return; }
+        runGit('commit -m "' + msg + '"');
+        document.getElementById('commit-msg').value = '';
+    }
+
+    function runCustomGit() {
+        var cmd = document.getElementById('custom-git').value;
+        if (!cmd) return;
+        runGit(cmd);
+        document.getElementById('custom-git').value = '';
+    }
+
+    function promptApply() {
+        var file = prompt("Enter patch filename:", "0001-fix.patch");
+        if(file) runGit('apply ' + file);
     }
 
     // --- UTILS ---
+    function toggleChat() { document.getElementById('chat-panel').classList.toggle('active'); if(editor) editor.layout(); }
+    
+    function toggleChatWidth() {
+        var p = document.getElementById('chat-panel');
+        if(p.classList.contains('wide')) { p.classList.remove('wide'); p.classList.add('full'); }
+        else if(p.classList.contains('full')) { p.classList.remove('full'); }
+        else { p.classList.add('wide'); }
+        if(editor) setTimeout(() => editor.layout(), 300);
+    }
+
     function openGenModal() { document.getElementById('gen-modal').style.display='block'; }
+    
     function submitGenCode() {
         var p = document.getElementById('gen-prompt').value;
-        if(!p) return;
         fetch('/editor/api/ai_gen', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ prompt:p, language: editor.getModel().getLanguageId() })
@@ -387,7 +385,7 @@ IDE_HTML = """
             if(d.code) {
                 editor.executeEdits("ai", [{ range: editor.getSelection(), text: d.code }]);
                 document.getElementById('gen-modal').style.display='none';
-            } else alert(d.error);
+            }
         });
     }
 
@@ -401,39 +399,70 @@ IDE_HTML = """
             body:JSON.stringify({ code:code })
         }).then(r=>r.json()).then(d=> document.getElementById('explain-content').innerText = d.explanation);
     }
-
-    function initTerminal() {
-        Terminal.applyAddon(fit);
-        term = new Terminal({ fontSize: 13, theme: { background: '#1e1e1e' } });
-        term.open(document.getElementById('xterm-container'));
-        term.fit();
-        term.write('$ ');
-        var cmd="";
-        term.on('data', k=>{
-            if(k.charCodeAt(0)===13){
-                term.write('\\r\\n');
-                if(cmd.trim()){
-                     fetch('/editor/api/term', {
-                        method:'POST',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({project:project, cmd:cmd.trim()})
-                     }).then(r=>r.json()).then(d=>{
-                         term.write(d.output.replace(/\\n/g,'\\r\\n'));
-                         term.write('\\r\\n$ ');
-                     });
-                } else term.write('$ ');
-                cmd="";
-            } else if(k.charCodeAt(0)===127){
-                if(cmd.length>0){ cmd=cmd.slice(0,-1); term.write('\\b \\b'); }
-            } else { cmd+=k; term.write(k); }
+    
+    function sendChat() {
+        var i = document.getElementById('chat-input');
+        var txt = i.value; if(!txt) return;
+        var b = document.getElementById('chat-msgs');
+        b.innerHTML += '<div class="msg user">'+txt+'</div>';
+        i.value = '';
+        fetch('/editor/api/chat_context', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ project:project, message:txt, code_context:editor.getValue(), current_file:currentPath })
+        }).then(r=>r.json()).then(d=>{
+            b.innerHTML += '<div class="msg bot">'+d.response+'</div>';
+            b.scrollTop = b.scrollHeight;
         });
     }
-    function toggleTerminal() { document.getElementById('terminal-panel').classList.toggle('open'); setTimeout(()=>term.fit(), 200); }
+
+    function initTerminal() {
+        try {
+            Terminal.applyAddon(fit);
+            term = new Terminal({ fontSize: 13, theme: { background: '#1e1e1e' } });
+            term.open(document.getElementById('xterm-container'));
+            term.fit();
+            term.write('$ ');
+            var cmd="";
+            term.on('data', k=>{
+                if(k.charCodeAt(0)===13){
+                    term.write('\\r\\n');
+                    if(cmd.trim()){
+                         fetch('/editor/api/term', {
+                            method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({project:project, cmd:cmd.trim()})
+                         }).then(r=>r.json()).then(d=>{
+                             term.write(d.output.replace(/\\n/g,'\\r\\n'));
+                             term.write('\\r\\n$ ');
+                         });
+                    } else term.write('$ ');
+                    cmd="";
+                } else if(k.charCodeAt(0)===127){
+                    if(cmd.length>0){ cmd=cmd.slice(0,-1); term.write('\\b \\b'); }
+                } else { cmd+=k; term.write(k); }
+            });
+        } catch(e) { console.log("Terminal failed to load (offline?): " + e); }
+    }
+    
+    function toggleTerminal() { 
+        var t = document.getElementById('terminal-panel');
+        t.style.display = (t.style.display === 'flex' ? 'none' : 'flex');
+        if(t.style.display === 'flex' && term) term.fit();
+    }
 </script>
 </body>
 </html>
 """
 
-# --- BACKEND ---
+# --- HELPERS ---
+def find_git_root(start_path):
+    """Walk up from start_path to find .git directory"""
+    path = os.path.abspath(start_path)
+    while path != '/':
+        if os.path.isdir(os.path.join(path, '.git')):
+            return path
+        path = os.path.dirname(path)
+    return None
+
 @editor_bp.route('/editor/view/<project>/')
 @editor_bp.route('/editor/view/<project>/<path:filepath>')
 def open_editor(project, filepath=""):
@@ -462,9 +491,6 @@ def chat_context():
             f"You are a coding assistant. Context File: {d.get('current_file')}\n"
             f"Code Content (Partial):\n{d.get('code_context')[:5000]}\n\n"
             "Task: Answer the user's question or analyze the error.\n"
-            "IMPORTANT: If the user provides an error or asks about a bug, and you can identify "
-            "the specific line number in the provided code that causes it, append exactly "
-            "'<<<JUMP:123>>>' (replace 123 with the line number) to the end of your response."
         )
         r = QGenieClient().chat(messages=[
             ChatMessage(role="system", content=sys_prompt),
@@ -472,52 +498,6 @@ def chat_context():
         ])
         return jsonify({'response': r.first_content})
     except Exception as e: return jsonify({'response': str(e)})
-
-@editor_bp.route('/editor/api/lint', methods=['POST'])
-def lint():
-    data = request.json
-    code = data.get('code', '')
-    lang = data.get('language', '')
-    errors = []
-    if not code.strip(): return jsonify({'errors':[]})
-
-    # STRICT PYTHON LINTER
-    if lang == 'python':
-        try:
-            tree = ast.parse(code)
-            defined = set(dir(builtins))
-            defined.add('self')
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.ClassDef)): defined.add(node.name)
-                elif isinstance(node, ast.Import):
-                    for n in node.names: defined.add(n.asname or n.name)
-                elif isinstance(node, ast.ImportFrom):
-                    for n in node.names: defined.add(n.asname or n.name)
-                elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store): defined.add(node.id)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                    if node.id not in defined: errors.append({'line': node.lineno, 'message': f"Undefined name '{node.id}'"})
-        except SyntaxError as e: errors.append({'line': e.lineno, 'message': f"Syntax: {e.msg}"})
-            
-    # STRICT C/CPP LINTER
-    elif lang in ['c', 'cpp']:
-        with tempfile.NamedTemporaryFile(suffix=".c", mode='w') as t:
-            t.write(code)
-            t.flush()
-            try:
-                res = subprocess.run(
-                    ['gcc', '-fsyntax-only', '-Werror=implicit', '-x', 'c', t.name], 
-                    capture_output=True, text=True
-                )
-                if res.returncode != 0:
-                    for line in res.stderr.splitlines():
-                        if ': error:' in line:
-                            parts = line.split(':')
-                            try: errors.append({'line': int(parts[1]), 'message': parts[-1].strip()})
-                            except: pass
-            except: pass
-            
-    return jsonify({'errors': errors})
 
 @editor_bp.route('/save_file', methods=['POST'])
 def save_file():
@@ -569,22 +549,58 @@ def explain():
 def term():
     d=request.json
     r,_=get_config_safe(d['project'])
+    
+    # 1. DETERMINE STARTING PATH
+    cwd = r
+    if 'path' in d and d['path']:
+        full_path = os.path.join(r, d['path'])
+        if os.path.isfile(full_path):
+            cwd = os.path.dirname(full_path)
+        elif os.path.isdir(full_path):
+            cwd = full_path
+
+    # 2. IF GIT COMMAND, SEARCH FOR REAL GIT ROOT (FIX 128)
+    if d['cmd'].strip().startswith('git '):
+        git_root = find_git_root(cwd)
+        if git_root:
+            cwd = git_root
+
     try:
-        o = subprocess.check_output(d['cmd'], shell=True, cwd=r, stderr=subprocess.STDOUT, text=True)
-        return jsonify({'output': o})
-    except Exception as e: return jsonify({'output': str(e)})
+        # FORCE GIT TO AVOID PAGER (prevents hangs)
+        env = os.environ.copy()
+        env['GIT_PAGER'] = 'cat'
+
+        # Use subprocess.run to capture stderr and avoid crashes on non-utf8 chars
+        res = subprocess.run(
+            d['cmd'], 
+            shell=True, 
+            cwd=cwd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, # Combine stdout/stderr
+            env=env
+        )
+        
+        # KEY FIX: errors='replace' prevents 0xf6 crash
+        output = res.stdout.decode('utf-8', errors='replace')
+        
+        if res.returncode != 0:
+            return jsonify({'output': f"COMMAND FAILED (Exit {res.returncode}):\n{output}"})
+            
+        return jsonify({'output': output})
+
+    except Exception as e: 
+        return jsonify({'output': f"Execution Error: {str(e)}"})
 
 @editor_bp.route('/editor/api/create', methods=['POST'])
 def create_item():
     d = request.json
     project = d.get('project')
-    rel_path = d.get('path')  # Relative path including new name
-    item_type = d.get('type') # 'file' or 'dir'
+    rel_path = d.get('path')
+    item_type = d.get('type')
     
     root, _ = get_config_safe(project)
     if not root: return jsonify({'error': 'Project not found'})
     
-    # Secure the path
     abs_path = os.path.abspath(os.path.join(root, rel_path))
     if not abs_path.startswith(root):
         return jsonify({'error': 'Invalid path security'})
@@ -593,10 +609,8 @@ def create_item():
         if item_type == 'dir':
             os.makedirs(abs_path, exist_ok=True)
         else:
-            # Create empty file if it doesn't exist
             if not os.path.exists(abs_path):
-                with open(abs_path, 'w') as f: 
-                    pass 
+                with open(abs_path, 'w') as f: pass 
     except Exception as e:
         return jsonify({'error': str(e)})
         
