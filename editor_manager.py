@@ -105,17 +105,26 @@ IDE_HTML = """
 </div>
 
 <div id="workspace">
-    <!-- FILE EXPLORER -->
     <div id="sidebar">
-        <div style="padding:5px 10px; background:#333; font-weight:bold; font-size:12px;">FILES <i class="fas fa-sync" style="float:right; cursor:pointer" onclick="refreshTree()"></i></div>
+        <!-- REPLACED HEADER (Line 110) -->
+        <div style="padding:5px 10px; background:#333; font-weight:bold; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
+            <span>FILES</span>
+            <div style="gap:10px; display:flex;">
+                <i class="fas fa-file-medical" title="New File" style="cursor:pointer" onclick="createItem('file')"></i>
+                <i class="fas fa-folder-plus" title="New Folder" style="cursor:pointer" onclick="createItem('dir')"></i>
+                <i class="fas fa-sync" title="Refresh" style="cursor:pointer" onclick="refreshTree()"></i>
+            </div>
+        </div>
+
         <div id="file-tree" style="flex:1; overflow-y:auto;"></div>
     </div>
+
 
     <!-- MAIN EDITOR -->
     <div id="center-area">
         <div id="monaco-container"></div>
         <div id="terminal-panel"><div id="xterm-container" style="flex:1;"></div></div>
-        
+
         <!-- GEN CODE MODAL -->
         <div id="gen-modal" class="modal">
             <h3 style="margin-top:0; color:white;">AI Code Gen</h3>
@@ -195,6 +204,32 @@ IDE_HTML = """
         
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
     });
+
+    // --- CREATE FILE/FOLDER ---
+    function createItem(type) {
+        var name = prompt("Enter Name for new " + (type==='dir'?'Folder':'File') + ":");
+        if(!name) return;
+        
+        // Handle path logic (append to currentDir)
+        var newPath = (currentDir ? currentDir + '/' : '') + name;
+        
+        fetch('/editor/api/create', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ 
+                project: project, 
+                path: newPath, 
+                type: type 
+            })
+        }).then(r => r.json()).then(d => {
+            if(d.error) {
+                alert("Error: " + d.error);
+            } else {
+                refreshTree(); // Reload tree to show new item
+                if(type === 'file') loadFile(newPath); // Auto-open if file
+            }
+        });
+    }
 
     // --- FIXED FILE EXPLORER ---
     function refreshTree(path) {
@@ -538,3 +573,31 @@ def term():
         o = subprocess.check_output(d['cmd'], shell=True, cwd=r, stderr=subprocess.STDOUT, text=True)
         return jsonify({'output': o})
     except Exception as e: return jsonify({'output': str(e)})
+
+@editor_bp.route('/editor/api/create', methods=['POST'])
+def create_item():
+    d = request.json
+    project = d.get('project')
+    rel_path = d.get('path')  # Relative path including new name
+    item_type = d.get('type') # 'file' or 'dir'
+    
+    root, _ = get_config_safe(project)
+    if not root: return jsonify({'error': 'Project not found'})
+    
+    # Secure the path
+    abs_path = os.path.abspath(os.path.join(root, rel_path))
+    if not abs_path.startswith(root):
+        return jsonify({'error': 'Invalid path security'})
+
+    try:
+        if item_type == 'dir':
+            os.makedirs(abs_path, exist_ok=True)
+        else:
+            # Create empty file if it doesn't exist
+            if not os.path.exists(abs_path):
+                with open(abs_path, 'w') as f: 
+                    pass 
+    except Exception as e:
+        return jsonify({'error': str(e)})
+        
+    return jsonify({'status': 'ok'})

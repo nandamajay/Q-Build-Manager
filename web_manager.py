@@ -11,6 +11,7 @@ import re
 import datetime
 import json
 import ai_helper
+import codecs
 from flask import Flask, render_template_string, request, redirect, abort, jsonify, send_file
 from editor_manager import editor_bp 
 from flask_socketio import SocketIO, emit, join_room
@@ -129,21 +130,34 @@ def run_build_task(cmd, name):
     socketio.emit('build_status', {'status': 'running'}, to=name)
     path, _ = get_config(name)
     
+
     # Standard PTY execution
     master, slave = pty.openpty()
     p = subprocess.Popen(cmd, shell=True, cwd=path, stdout=slave, stderr=slave, preexec_fn=os.setsid, executable='/bin/bash')
     os.close(slave)
     BUILD_STATES[name]['pid'] = p.pid
     
+    # IMPROVEMENT: Use incremental decoder and larger buffer
+    decoder = codecs.getincrementaldecoder("utf-8")(errors='replace')
+    
     while True:
         try:
-            data = os.read(master, 1024)
+            # Increase buffer to 16KB to reduce overhead and splitting
+            data = os.read(master, 16384) 
             if not data: break
-            d = data.decode(errors='ignore')
-            BUILD_STATES[name]['logs'].append(d)
-            socketio.emit('log_chunk', {'data': d}, to=name)
-        except: break
-    
+            
+            # Decode safely, buffering incomplete bytes for the next chunk
+            d = decoder.decode(data, final=False)
+            
+            if d:
+                BUILD_STATES[name]['logs'].append(d)
+                socketio.emit('log_chunk', {'data': d}, to=name)
+        except OSError: 
+            break  # Input/Output error (process likely ended)
+        except Exception as e:
+            print(f"Log Error: {e}")
+            break
+
     p.wait()
     final_status = 'done' if p.returncode == 0 else 'failed'
     BUILD_STATES[name]['status'] = final_status
