@@ -1,47 +1,84 @@
-# Q-Build-Manager
+# Q-Build Manager V30 - Demo Guide
 
-**A Dockerized, Hybrid (CLI + Web) Workspace Manager for Qualcomm Yocto Builds.**
+This tool automates Yocto and Upstream Kernel builds with a modern Web UI, Integrated IDE (Pro Editor), and AI assistance.
 
-Q-Build-Manager abstracts the complexity of `kas`, `bitbake`, and Yocto layer management into a clean, modern interface. It is designed to turn a standard Linux machine into a powerful **Kernel Development Workstation**.
+## 🚀 1. Setup & Launch
 
-![Status](https://img.shields.io/badge/Status-Active-success)
-![Docker](https://img.shields.io/badge/Docker-v20.10+-blue)
-![Yocto](https://img.shields.io/badge/Yocto-Scarthgap%20Compatible-orange)
+1.  **Clone the Repository** (on the build server):
+    ```bash
+    git clone https://github.com/nandamajay/Q-Build-Manager.git
+    cd Q-Build-Manager
+    ```
 
----
+2.  **Start the Tool**:
+    ```bash
+    ./run.sh
+    ```
+    *   Select **Web Interface** mode.
+    *   Enter a port number (e.g., `1345`).
 
-## 🚀 Key Features
+3.  **Establish Secure Tunnel**:
+    *   Ask the user to open a **Command Prompt / Terminal** on their *local laptop*.
+    *   Run the following command (replace `1345` with your chosen port):
+        ```bash
+        ssh -L 1345:localhost:1345 nandam@hu-nandam-hyd .
+        ```
+        *(This forwards the server's port 1345 to the local machine's port 1345)*
 
-### 1. 🖥️ Centralized Dashboard
-- Manage multiple build projects (workspaces) from a single view.
-- Real-time status indicators (Building, Idle, Failed).
-- Disk usage monitoring and automated cleanup.
-
-### 2. ⚡ Dynamic Configuration
-- **Topology Switching:** Toggle between **ASOC** (Standard) and **AudioReach** (spf) topologies with one click.
-- **Board Support:** Auto-scans `meta-qcom/ci` to discover available board configurations.
-
-### 3. 🧭 Smart Code Explorer
-- **Web-Based IDE:** Browse source code (`.c`, `.dts`, `.bb`) directly in the browser.
-- **Click-to-Definition:** Click on any struct, function, or macro to instantly jump to its definition (indexes `workspace/sources`, `meta-qcom`, and `kernel-source`).
-- **Devtool Integration:** Automatically prioritizes modified sources in `workspace/sources` over read-only layers.
-
-### 4. 🛠️ Kernel Dev Kit (Beta)
-- **Devtool GUI:** Run `devtool modify` and `devtool reset` via button clicks.
-- **Recipe Scanner:** Auto-discovers available build targets (recipes) for the current board.
+4.  **Open in Browser**:
+    *   Navigate to: [http://localhost:1345](http://localhost:1345)
 
 ---
 
-## 📦 Installation
+## 🔍 2. Demo Walkthrough & Validation
 
-### Prerequisites
-- Docker Engine
-- Linux Host (Ubuntu 20.04/22.04 recommended)
+Follow these steps to validate and demonstrate each feature to the team.
 
-### Quick Start
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/nandamajay/Q-Build-Manager.git
-   cd Q-Build-Manager
+### 🖥️ Feature 1: Dashboard & Project Management
+*   **Action**: Land on the Home Dashboard.
+*   **Validation**:
+    *   Verify all Yocto/Kernel projects are listed.
+    *   Check that the status (IDLE/BUILDING) is accurate.
 
-   ./run.sh
+### ⚙️ Feature 2: Build Console (Real-time Logs)
+*   **Action**: Click the green **Build** button on any project.
+*   **Validation**:
+    *   Observe the **xterm.js console** opening.
+    *   **Check**: Logs should stream smoothly (no lag/stripping).
+    *   **Check**: ANSI colors (green success, red failure) should render correctly.
+    *   *Note: This replaces the old text-box log viewer.*
+
+### 📝 Feature 3: Pro Editor (IDE)
+*   **Action**: Click the purple **Code** button.
+*   **Validation**:
+    *   **File Tree**: Click "New File" icon -> Create `demo_test.py`.
+    *   **Edit**: Type some Python code.
+    *   **Save**: Press `Ctrl+S` or click "Save". Verify "Saved" status in the footer.
+
+### 🤖 Feature 4: AI Coding & Diff View (Highlight)
+*   **Action**: Inside the Editor, click **AI Gen**.
+*   **Validation**:
+    *   **Prompt**: Enter *"Write a function to calculate factorial with error handling"*.
+    *   **Click**: "Preview Changes".
+    *   **Verify**: The **Diff View Modal** opens.
+        *   **Left**: Original Code.
+        *   **Right**: AI's proposed code.
+    *   **Action**: Click **"Apply Changes"** to merge it.
+
+### 🐙 Feature 5: Git Integration (Visual)
+*   **Action**: Click the orange **Git** button.
+*   **Validation**:
+    *   **History**: Click "History" to see the commit graph.
+    *   **Patching**: Click "Apply Patch" -> Select a `.patch` file from your local PC.
+        *   *Verify*: Output shows "Patch applied successfully".
+    *   **Commit**: Type a message and click "Commit".
+
+### 💬 Feature 6: Context-Aware Chat
+*   **Action**: Open the **Chat** sidebar.
+*   **Validation**:
+    *   **Ask**: *"What does this file do?"*
+    *   **Verify**: The AI reads the currently open file (Smart Context) and explains it.
+    *   **Verify**: Markdown code blocks are formatted with copy buttons.
+
+---
+
