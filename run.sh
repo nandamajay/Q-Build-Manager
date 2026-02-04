@@ -7,7 +7,7 @@ WEB_SCRIPT="web_manager.py"
 KEY_FILE=".qgenie_key"
 # ---------------------
 
-# 1. API KEY HANDLING (Secure & Persistent)
+# 1. API KEY HANDLING
 if [ -f "$KEY_FILE" ]; then
     source $KEY_FILE
 else
@@ -38,7 +38,7 @@ if [[ "$(docker images -q $IMAGE_NAME 2> /dev/null)" == "" ]]; then
     docker build -t $IMAGE_NAME .
 fi
 
-# 3. MAIN MENU (Restored)
+# 3. MAIN MENU
 while true; do
     echo "=========================================="
     echo "   Q-Build Manager (AI Enabled)"
@@ -65,17 +65,26 @@ while true; do
             read -p "Enter Port to use [default 5000]: " WEB_PORT
             WEB_PORT=${WEB_PORT:-5000}
 
-            echo "-----------------------------------------------------"
-            echo ">> Starting Web Server..."
-            echo ">> Open Browser: http://localhost:$WEB_PORT"
-            echo "-----------------------------------------------------"
+            # GET HOSTNAME for instructions
+            HOST_NAME=$(hostname)
+            
+            echo "----------------------------------------------------------------"
+            echo " >> STARTING WEB SERVER on PORT $WEB_PORT..."
+            echo "----------------------------------------------------------------"
+            echo " 1. Open a Command Prompt / Terminal on your laptop."
+            echo " 2. Copy and run this command to access the tool:"
+            echo ""
+            echo "    ssh -L $WEB_PORT:localhost:$WEB_PORT $USER@$HOST_NAME"
+            echo ""
+            echo " 3. Open your browser to: http://localhost:$WEB_PORT"
+            echo "----------------------------------------------------------------"
 
             docker run -it --rm \
                 -p $WEB_PORT:$WEB_PORT \
                 -v $(pwd)/work:/work \
                 -v $(pwd)/$WEB_SCRIPT:/work/$WEB_SCRIPT \
-		-v $(pwd)/editor_manager.py:/work/editor_manager.py \
-		-v $(pwd)/ai_helper.py:/work/ai_helper.py \
+                -v $(pwd)/editor_manager.py:/work/editor_manager.py \
+                -v $(pwd)/ai_helper.py:/work/ai_helper.py \
                 -e HOST_UID=$(id -u) \
                 -e HOST_GID=$(id -g) \
                 -e WEB_PORT=$WEB_PORT \
