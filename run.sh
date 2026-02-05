@@ -87,6 +87,7 @@ while true; do
                 -v $(pwd)/ai_helper.py:/work/ai_helper.py \
                 -e HOST_UID=$(id -u) \
                 -e HOST_GID=$(id -g) \
+		-e CHOWN_WORK=0 \
                 -e WEB_PORT=$WEB_PORT \
                 -e QGENIE_API_KEY="$QGENIE_API_KEY" \
                 $IMAGE_NAME python3 /work/$WEB_SCRIPT
