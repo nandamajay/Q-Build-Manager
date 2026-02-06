@@ -85,6 +85,7 @@ while true; do
                 -v $(pwd)/$WEB_SCRIPT:/work/$WEB_SCRIPT \
                 -v $(pwd)/editor_manager.py:/work/editor_manager.py \
                 -v $(pwd)/ai_helper.py:/work/ai_helper.py \
+                -v $(pwd)/visualization:/work/visualization \
                 -e HOST_UID=$(id -u) \
                 -e HOST_GID=$(id -g) \
 		-e CHOWN_WORK=0 \

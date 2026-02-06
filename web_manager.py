@@ -4,6 +4,9 @@ import glob
 import subprocess
 import pty
 import threading
+from visualization.path_manager import PathManager
+from visualization.dts_parser import DtsParser
+from visualization.diagram_builder import DiagramBuilder
 import signal
 import shutil
 import time
@@ -412,6 +415,7 @@ DASHBOARD_HTML = """
                     <div class="flex space-x-2">
                         <a href="/build/{{ name }}" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-white text-xs font-bold">Build</a>
                         <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs">Code</a>
+                        <a class="bg-yellow-600 hover:bg-yellow-500 px-3 py-1 rounded text-white text-xs font-bold" href="/viz/{{ name }}"><i class="fas fa-project-diagram"></i> Viz</a>
                     </div>
                     <a href="/delete/{{ name }}" onclick="return confirm('Delete?'); event.stopPropagation()" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></a>
                 </div>
@@ -434,6 +438,7 @@ DASHBOARD_HTML = """
                     <div class="flex space-x-2">
                         <a href="/build/{{ name }}" class="bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded text-white text-xs font-bold">Build</a>
                         <a href="/code/{{ name }}/" class="bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white text-xs">Code</a>
+                        <a class="bg-yellow-600 hover:bg-yellow-500 px-3 py-1 rounded text-white text-xs font-bold" href="/viz/{{ name }}"><i class="fas fa-project-diagram"></i> Viz</a>
                     </div>
                     <a href="/delete/{{ name }}" onclick="return confirm('Delete?'); event.stopPropagation()" class="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></a>
                 </div>
@@ -445,6 +450,237 @@ DASHBOARD_HTML = """
 </div>
 """
 
+
+VIZ_HTML = r'''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Audio Architect Viz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet"/>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ 
+            startOnLoad: false, 
+            securityLevel: 'loose', 
+            theme: 'dark', 
+            flowchart: { useMaxWidth: false, htmlLabels: true } 
+        });
+        window.mermaid = mermaid;
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+    <style>
+        html, body { height: 100%; width: 100%; margin: 0; overflow: hidden; background-color: #121212; color: #d4d4d4; }
+        .tab-btn.active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+        #main-viewport { width: 100%; height: calc(100vh - 110px); background: #1e1e1e; position: relative; overflow: hidden; }
+        #graph-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+        #graph-container svg { width: 100%; height: 100%; }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+
+<!-- HEADER -->
+<div class="bg-gray-800 p-3 shadow-md flex justify-between items-center shrink-0 z-20">
+    <div class="flex items-center space-x-4">
+        <h2 class="text-lg font-bold text-white">{{ project }}</h2>
+        <span class="px-2 py-0.5 rounded bg-blue-600 text-xs text-white">{{ type }}</span>
+    </div>
+    
+    <div class="flex items-center space-x-2">
+        <input type="text" id="file-filter" placeholder="Filter files..." class="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-300 w-32" onkeyup="filterFiles()">
+        <select class="bg-gray-900 text-sm p-1 border border-gray-600 rounded w-64 text-gray-300" id="file-select"></select>
+        
+        <button class="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-white text-sm" onclick="generate()">
+            <i class="fas fa-play"></i> Viz
+        </button>
+
+        <div class="relative group">
+            <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm">
+                <i class="fas fa-download"></i>
+            </button>
+            <div class="absolute right-0 mt-1 w-32 bg-gray-800 rounded shadow-lg hidden group-hover:block z-50 border border-gray-700">
+                <a href="#" onclick="downloadSVG()" class="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Download SVG</a>
+                <a href="#" onclick="downloadPNG()" class="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Download PNG</a>
+            </div>
+        </div>
+        
+        <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm" onclick="resetZoom()" title="Fit to Screen">
+            <i class="fas fa-expand-arrows-alt"></i>
+        </button>
+    </div>
+</div>
+
+<!-- TABS -->
+<div class="bg-gray-800 border-t border-gray-700 flex px-4 space-x-6 text-sm shrink-0 z-20">
+    <button class="tab-btn active py-2" id="tab-hardware" onclick="switchTab('hardware')">Hardware View</button>
+    <button class="tab-btn py-2" id="tab-dailinks" onclick="switchTab('dailinks')">DAI Links</button>
+    <button class="tab-btn py-2" id="tab-routing" onclick="switchTab('routing')">Audio Routing</button>
+</div>
+
+<!-- MAIN VIEWPORT -->
+<div id="main-viewport">
+    <div id="loading" class="hidden absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75 z-50">
+        <div class="text-blue-400 font-bold text-xl"><i class="fas fa-spinner fa-spin"></i> Processing...</div>
+    </div>
+    <div id="graph-container">
+        <div class="text-gray-500">Select a DTS file and click Viz</div>
+    </div>
+</div>
+
+<script>
+    let currentData = null; 
+    let panZoomInstance = null;
+    let allFiles = [];
+
+    window.onload = function() {
+        fetch(`/api/viz/list_dts?project={{ project }}&mode={{ type }}`).then(r => r.json()).then(data => {
+            allFiles = data.files || [];
+            populateSelect(allFiles);
+        });
+    };
+
+    function populateSelect(files) {
+        const sel = document.getElementById('file-select');
+        sel.innerHTML = '';
+        files.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f; opt.innerText = f; sel.appendChild(opt);
+        });
+    }
+
+    function filterFiles() {
+        const term = document.getElementById('file-filter').value.toLowerCase();
+        populateSelect(allFiles.filter(f => f.toLowerCase().includes(term)));
+    }
+
+    async function generate() {
+        const file = document.getElementById('file-select').value;
+        if (!file) return;
+        
+        document.getElementById('loading').classList.remove('hidden');
+        if(panZoomInstance) { panZoomInstance.destroy(); panZoomInstance = null; }
+        
+        try {
+            const res = await fetch('/api/viz/generate', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ project: "{{ project }}", mode: "{{ type }}", filename: file })
+            });
+            currentData = await res.json();
+            renderActiveTab();
+        } catch(e) { 
+            alert("Error: " + e); 
+        } finally { 
+            document.getElementById('loading').classList.add('hidden'); 
+        }
+    }
+
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+        document.getElementById('graph-container').dataset.tab = tab;
+        renderActiveTab();
+    }
+
+    async function renderActiveTab() {
+        if(!currentData) return;
+        const tab = document.getElementById('graph-container').dataset.tab || 'hardware';
+        const container = document.getElementById('graph-container');
+        const graphDef = currentData[tab];
+
+        // Debug: Log the Graph Code
+        console.log(`[V19 Debug] Render ${tab}:`, graphDef);
+
+        if(!graphDef || graphDef.length < 15) {
+            container.innerHTML = '<div class="text-gray-500">No diagram data available.</div>';
+            return;
+        }
+
+        container.innerHTML = `<pre class="mermaid">${graphDef}</pre>`;
+
+        try {
+            await window.mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+            
+            const svg = container.querySelector('svg');
+            if(svg) {
+                svg.style.width = "100%"; 
+                svg.style.height = "100%";
+                
+                // Better ViewBox calculation
+                const bbox = svg.getBBox();
+                if(bbox.width > 0 && bbox.height > 0) {
+                     // Add slight padding
+                     svg.setAttribute('viewBox', `${bbox.x - 20} ${bbox.y - 20} ${bbox.width + 40} ${bbox.height + 40}`);
+                }
+
+                panZoomInstance = svgPanZoom(svg, {
+                    zoomEnabled: true, controlIconsEnabled: true, fit: true, center: true, minZoom: 0.1, maxZoom: 10
+                });
+                
+                // Smart Fit: Don't zoom out too much if graph is tiny
+                setTimeout(() => { 
+                    panZoomInstance.resize(); 
+                    panZoomInstance.fit(); 
+                    panZoomInstance.center();
+                    if(panZoomInstance.getZoom() > 2) { panZoomInstance.zoom(2); panZoomInstance.center(); }
+                }, 300);
+            }
+        } catch(e) {
+            container.innerHTML = `<div class="text-red-400 p-4">
+                <b>Render Error:</b> ${e.message}<br><br>
+                <div class="text-xs text-gray-500">Check Console (F12) for raw code.</div>
+            </div>`;
+        }
+    }
+
+    function resetZoom() {
+        if(panZoomInstance) {
+            panZoomInstance.resize(); panZoomInstance.fit(); panZoomInstance.center();
+        }
+    }
+
+    function downloadSVG() {
+        const svg = document.querySelector('#graph-container svg');
+        if(!svg) return;
+        const source = new XMLSerializer().serializeToString(svg);
+        const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+        const a = document.createElement('a'); a.href = url; a.download = "diagram.svg"; a.click();
+    }
+    
+    function downloadPNG() {
+        const svg = document.querySelector('#graph-container svg');
+        if(!svg) return;
+        
+        // Convert SVG to Canvas
+        const canvas = document.createElement('canvas');
+        const bbox = svg.getBBox();
+        const scale = 2; // High Resolution
+        canvas.width = (bbox.width + 40) * scale;
+        canvas.height = (bbox.height + 40) * scale;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = "#1e1e1e"; // Dark background
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const img = new Image();
+        const serializer = new XMLSerializer();
+        const svgStr = serializer.serializeToString(svg);
+        const svgBlob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
+        const url = URL.createObjectURL(svgBlob);
+        
+        img.onload = function() {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const pngUrl = canvas.toDataURL("image/png");
+            const a = document.createElement('a'); a.href = pngUrl; a.download = "diagram.png"; a.click();
+            URL.revokeObjectURL(url);
+        };
+        img.src = url;
+    }
+</script>
+</body>
+</html>
+'''
+
+
 BUILD_CONSOLE_HTML = """
 <div class="flex flex-col h-full space-y-4">
     <div class="bg-gray-800 p-4 rounded-lg shadow">
@@ -452,6 +688,7 @@ BUILD_CONSOLE_HTML = """
             <div><h2 class="text-2xl font-bold">{{ project }}</h2><div class="text-sm text-gray-400 mt-1"><span class="px-2 py-0.5 rounded bg-gray-700 text-white text-xs">{{ type.upper() }}</span> Status: <span class="font-bold" id="statusBadge">IDLE</span></div></div>
             <div class="flex space-x-3 items-center">
                 <a class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-white" href="/code/{{ project }}/" target="_blank"><i class="fas fa-external-link-alt mr-1"></i> Code</a>
+                <a class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-white" href="/viz/{{ project }}"><i class="fas fa-project-diagram mr-1"></i> Viz</a>
                 <button class="hidden bg-red-600 text-white px-6 py-2 rounded" id="stopBtn" onclick="stopBuild()">STOP</button>
                 <button class="bg-green-600 text-white px-6 py-2 rounded" id="buildBtn" onclick="startBuild()"><i class="fas fa-play mr-1"></i> Build</button>
                 <a class="bg-gray-700 px-4 py-2 rounded text-white" href="/">Back</a>
@@ -748,6 +985,7 @@ SEARCH_HTML = """
     <div class="flex justify-between items-center mb-4">
         <h2 class="text-2xl font-bold">Search: <span class="text-yellow-400">{{ query }}</span></h2>
         <a href="/code/{{ project }}/" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">Back to Code</a>
+                <a class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-white" href="/viz/{{ project }}"><i class="fas fa-project-diagram mr-1"></i> Viz</a>
     </div>
     <div class="flex-grow overflow-y-auto bg-gray-900 p-4 rounded border border-gray-700 font-mono text-sm">
         {% if results %}
@@ -1122,5 +1360,86 @@ def handle_scan_dtb(data):
     if not dtbs: dtbs = ['lemans-evk.dtb'] 
     socketio.emit('dtb_list', {'dtbs': sorted(dtbs)})
 
+
+
+# --- VISUALIZATION ROUTES ---
+# (Inserted by fix_web_manager_final.py)
+
+@app.route('/viz/<project>')
+def viz_dashboard(project):
+    """Renders the Visualization Page"""
+    path, cfg = get_config(project)
+    # Retry sync if project not found (covers some edge cases)
+    if not path:
+        sync_registry()
+        path, cfg = get_config(project)
+        
+    if not path: 
+        return "Project path not found. Please ensure project exists.", 404
+        
+    pct, free = get_disk_usage()
+    # Check if VIZ_HTML exists
+    if 'VIZ_HTML' not in globals():
+        return "Error: VIZ_HTML template is missing from web_manager.py", 500
+        
+    return render_template_string(BASE_HTML, 
+                                  disk_pct=pct, disk_free=free, 
+                                  project=project, 
+                                  body_content=render_template_string(VIZ_HTML, project=project, type=cfg.get('type', 'upstream')))
+
+@app.route('/api/viz/list_dts')
+def api_list_dts():
+    """API to populate the Dropdown"""
+    project = request.args.get('project')
+    mode = request.args.get('mode')
+    path, _ = get_config(project)
+    if not path: return jsonify({'files': []})
+    
+    # Lazy import to ensure package exists
+    try:
+        from visualization.path_manager import PathManager
+    except ImportError:
+        return jsonify({'error': 'Visualization package missing'}), 500
+
+    pm = PathManager(path, mode)
+    files = pm.list_dts_files()
+    return jsonify({'files': files})
+
+@app.route('/api/viz/generate', methods=['POST'])
+def api_viz_generate():
+    """API to parse and return Mermaid Code"""
+    data = request.json
+    project = data.get('project')
+    mode = data.get('mode')
+    filename = data.get('filename')
+    path, _ = get_config(project)
+    
+    if not path: return jsonify({'error': 'Project not found'}), 404
+    
+    try:
+        from visualization.path_manager import PathManager
+        from visualization.dts_parser import DtsParser
+        from visualization.diagram_builder import DiagramBuilder
+    except ImportError:
+         return jsonify({'error': 'Visualization package missing'}), 500
+
+    pm = PathManager(path, mode)
+    base_path = pm.get_dts_base_path()
+    if not base_path: return jsonify({'error': 'DTS path not found'}), 404
+    
+    parser = DtsParser(base_path)
+    parsed_data = parser.parse(filename)
+    
+    # [V16 FIX] Initialize Parser with Base Path
+    parser = DtsParser(base_path)
+    parser.parse(filename)
+    
+    # [V16 FIX] Build all diagrams
+    builder = DiagramBuilder(parser)
+    diagrams = builder.build_all()
+    return jsonify(diagrams)
+
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=SERVER_PORT, allow_unsafe_werkzeug=True)
+
+
