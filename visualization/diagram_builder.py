@@ -148,3 +148,71 @@ class DiagramBuilder:
             d = self._get_safe_id(dst)
             lines.append(f'{s} --> {d}')
         return "\n".join(lines)
+
+    def build_graph_json(self):
+        """Return a renderer-agnostic graph model for Cytoscape.
+        {
+          "nodes": [{"id": str, "label": str, "type": str, "full_name": str}],
+          "edges": [{"source": str, "target": str, "kind": str, "label": str}]
+        }
+        """
+        def add_node(node_map, raw_id, label=None, ntype='component', full_name=None):
+            if not raw_id:
+                return None
+            sid = self._get_safe_id(raw_id) if hasattr(self, '_get_safe_id') else raw_id
+            if sid not in node_map:
+                lab = label if label is not None else (raw_id or '')
+                if hasattr(self, 'sanitize_label'):
+                    lab = self.sanitize_label(lab)
+                node_map[sid] = {
+                    'id': sid,
+                    'label': (lab or '').replace('\"',''),
+                    'type': ntype or 'component',
+                    'full_name': full_name or raw_id
+                }
+            return sid
+
+        nodes_src = getattr(self.parser, 'get_hardware_nodes', lambda: [])() or []
+        node_map = {}
+        edges = []
+
+        # 1) Hardware nodes
+        for n in nodes_src:
+            raw_id = n.get('id','')
+            ntype = n.get('type','component')
+            label = n.get('label','')
+            full_name = n.get('full_name','')
+            add_node(node_map, raw_id, label, ntype, full_name)
+
+        # Helper to append edge and ensure endpoints exist
+        def add_edge(kind, src, dst, label=''):
+            s = add_node(node_map, src)
+            d = add_node(node_map, dst)
+            if not s or not d:
+                return
+            edges.append({'source': s, 'target': d, 'kind': kind, 'label': (label or '').replace('\"','')})
+
+        # 2) Hardware connections
+        try:
+            hw_conns = getattr(self.parser, 'get_hardware_connections', lambda: [])() or []
+        except Exception:
+            hw_conns = []
+        for src, dst, lbl in hw_conns:
+            add_edge('hardware', src, dst, lbl)
+
+        # 3) DAI link nodes and edges
+        for link in getattr(self.parser, 'dailinks', []) or []:
+            name = (link.get('name') or '').replace('\"','')
+            for cpu in link.get('cpu', []) or []:
+                add_node(node_map, cpu, cpu, 'cpu', cpu)
+            for codec in link.get('codec', []) or []:
+                add_node(node_map, codec, codec, 'codec', codec)
+            for cpu in link.get('cpu', []) or []:
+                for codec in link.get('codec', []) or []:
+                    add_edge('dai', cpu, codec, name)
+
+        # 4) Routing edges (endpoints might be arbitrary strings)
+        for src, dst in getattr(self.parser, 'routing', []) or []:
+            add_edge('routing', (src or ''), (dst or ''), '')
+
+        return {'nodes': list(node_map.values()), 'edges': edges}

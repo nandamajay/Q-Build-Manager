@@ -451,235 +451,203 @@ DASHBOARD_HTML = """
 """
 
 
+
 VIZ_HTML = r'''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Audio Architect Viz</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet"/>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({ 
-            startOnLoad: false, 
-            securityLevel: 'loose', 
-            theme: 'dark', 
-            flowchart: { useMaxWidth: false, htmlLabels: true } 
-        });
-        window.mermaid = mermaid;
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
-    <style>
-        html, body { height: 100%; width: 100%; margin: 0; overflow: hidden; background-color: #121212; color: #d4d4d4; }
-        .tab-btn.active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
-        #main-viewport { width: 100%; height: calc(100vh - 110px); background: #1e1e1e; position: relative; overflow: hidden; }
-        #graph-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-        #graph-container svg { width: 100%; height: 100%; }
-    </style>
+  <title>Audio Architect Viz</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet"/>
+  <!-- Cytoscape Core + Layouts -->
+  <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
+  <style>
+    html, body { height: 100%; width: 100%; margin: 0; overflow: hidden; background-color: #121212; color:#d4d4d4; }
+    #main-viewport { width: 100%; height: calc(100vh - 110px); background:#1e1e1e; position: relative; }
+    #cy { width: 100%; height: 100%; }
+    .tab-btn.active { border-bottom: 2px solid #3b82f6; color:#3b82f6; }
+  </style>
 </head>
 <body class="flex flex-col h-screen">
-
-<!-- HEADER -->
-<div class="bg-gray-800 p-3 shadow-md flex justify-between items-center shrink-0 z-20">
+  <!-- HEADER -->
+  <div class="bg-gray-800 p-3 shadow-md flex justify-between items-center shrink-0 z-20">
     <div class="flex items-center space-x-4">
-        <h2 class="text-lg font-bold text-white">{{ project }}</h2>
-        <span class="px-2 py-0.5 rounded bg-blue-600 text-xs text-white">{{ type }}</span>
+      <h2 class="text-lg font-bold text-white">{{ project }}</h2>
+      <span class="px-2 py-0.5 rounded bg-blue-600 text-xs text-white">{{ type }}</span>
     </div>
-    
     <div class="flex items-center space-x-2">
-        <input type="text" id="file-filter" placeholder="Filter files..." class="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-300 w-32" onkeyup="filterFiles()">
-        <select class="bg-gray-900 text-sm p-1 border border-gray-600 rounded w-64 text-gray-300" id="file-select"></select>
-        
-        <button class="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-white text-sm" onclick="generate()">
-            <i class="fas fa-play"></i> Viz
+      <input type="text" id="file-filter" placeholder="Filter files..." class="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-300 w-32" onkeyup="filterFiles()">
+      <select class="bg-gray-900 text-sm p-1 border border-gray-600 rounded w-64 text-gray-300" id="file-select"></select>
+      <button class="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-white text-sm" onclick="generate()">
+        <i class="fas fa-play"></i> Viz
+      </button>
+      <!-- Layout selector -->
+      <select id="layoutSelect" class="bg-gray-900 text-sm p-1 border border-gray-600 rounded text-gray-300">
+        <option value="cose-bilkent">Layout: COSE</option>
+        <option value="dagre">Layout: Dagre</option>
+      </select>
+      <!-- Exports -->
+      <div class="relative group">
+        <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm">
+          <i class="fas fa-download"></i>
         </button>
-
-        <div class="relative group">
-            <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm">
-                <i class="fas fa-download"></i>
-            </button>
-            <div class="absolute right-0 mt-1 w-32 bg-gray-800 rounded shadow-lg hidden group-hover:block z-50 border border-gray-700">
-                <a href="#" onclick="downloadSVG()" class="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Download SVG</a>
-                <a href="#" onclick="downloadPNG()" class="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Download PNG</a>
-            </div>
+        <div class="absolute right-0 mt-1 w-36 bg-gray-800 rounded shadow-lg hidden group-hover:block z-50 border border-gray-700">
+          <a href="#" onclick="downloadPNG()" class="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">Download PNG</a>
         </div>
-        
-        <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm" onclick="resetZoom()" title="Fit to Screen">
-            <i class="fas fa-expand-arrows-alt"></i>
-        </button>
+      </div>
+      <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white text-sm" onclick="fitToScreen()" title="Fit">
+        <i class="fas fa-expand-arrows-alt"></i>
+      </button>
     </div>
-</div>
+  </div>
 
-<!-- TABS -->
-<div class="bg-gray-800 border-t border-gray-700 flex px-4 space-x-6 text-sm shrink-0 z-20">
+  <!-- TABS -->
+  <div class="bg-gray-800 border-t border-gray-700 flex px-4 space-x-6 text-sm shrink-0 z-20">
     <button class="tab-btn active py-2" id="tab-hardware" onclick="switchTab('hardware')">Hardware View</button>
     <button class="tab-btn py-2" id="tab-dailinks" onclick="switchTab('dailinks')">DAI Links</button>
     <button class="tab-btn py-2" id="tab-routing" onclick="switchTab('routing')">Audio Routing</button>
-</div>
+  </div>
 
-<!-- MAIN VIEWPORT -->
-<div id="main-viewport">
+  <!-- MAIN VIEWPORT -->
+  <div id="main-viewport">
     <div id="loading" class="hidden absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75 z-50">
-        <div class="text-blue-400 font-bold text-xl"><i class="fas fa-spinner fa-spin"></i> Processing...</div>
+      <div class="text-blue-400 font-bold text-xl"><i class="fas fa-spinner fa-spin"></i> Processing...</div>
     </div>
-    <div id="graph-container">
-        <div class="text-gray-500">Select a DTS file and click Viz</div>
-    </div>
-</div>
+    <div id="cy"></div>
+  </div>
 
 <script>
-    let currentData = null; 
-    let panZoomInstance = null;
-    let allFiles = [];
+  // Register layouts
+  if (typeof cytoscape !== 'undefined') {
+    if (typeof cytoscapeCoseBilkent !== 'undefined') { cytoscape.use(cytoscapeCoseBilkent); }
+    if (typeof cytoscapeDagre !== 'undefined') { cytoscape.use(cytoscapeDagre); }
+  }
 
-    window.onload = function() {
-        fetch(`/api/viz/list_dts?project={{ project }}&mode={{ type }}`).then(r => r.json()).then(data => {
-            allFiles = data.files || [];
-            populateSelect(allFiles);
-        });
-    };
+  let allFiles = [];
+  let currentData = null;   // full API payload
+  let graph = null;         // currentData.graph
+  let activeTab = 'hardware';
+  let cy = null;
 
-    function populateSelect(files) {
-        const sel = document.getElementById('file-select');
-        sel.innerHTML = '';
-        files.forEach(f => {
-            const opt = document.createElement('option');
-            opt.value = f; opt.innerText = f; sel.appendChild(opt);
-        });
+  window.onload = function() {
+    // Populate DTS list
+    fetch(`/api/viz/list_dts?project={{ project }}&mode={{ type }}`)
+      .then(r => r.json())
+      .then(data => { allFiles = data.files || []; populateSelect(allFiles); });
+  }
+
+  function populateSelect(files) {
+    const sel = document.getElementById('file-select');
+    sel.innerHTML = '';
+    files.forEach(f => { const opt = document.createElement('option'); opt.value = f; opt.innerText = f; sel.appendChild(opt); });
+  }
+  function filterFiles() {
+    const term = document.getElementById('file-filter').value.toLowerCase();
+    populateSelect((allFiles||[]).filter(f => f.toLowerCase().includes(term)));
+  }
+
+  async function generate() {
+    const file = document.getElementById('file-select').value;
+    if (!file) return;
+    document.getElementById('loading').classList.remove('hidden');
+    try {
+      const res = await fetch('/api/viz/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: "{{ project }}", mode: "{{ type }}", filename: file })
+      });
+      currentData = await res.json();
+      graph = currentData.graph || { nodes: [], edges: [] };
+      renderActiveTab();
+    } catch (e) {
+      alert('Error: ' + e);
+    } finally {
+      document.getElementById('loading').classList.add('hidden');
     }
+  }
 
-    function filterFiles() {
-        const term = document.getElementById('file-filter').value.toLowerCase();
-        populateSelect(allFiles.filter(f => f.toLowerCase().includes(term)));
+  function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    renderActiveTab();
+  }
+
+  function filterGraph(kind) {
+    if (!graph) return { elements: [] };
+    const edges = (graph.edges || []).filter(e => e.kind === kind);
+    const nodeIds = new Set();
+    edges.forEach(e => { nodeIds.add(e.source); nodeIds.add(e.target); });
+
+    // Include nodes that participate in edges; if none (e.g., hardware has no edges), include all
+    let nodes = (graph.nodes || []).filter(n => nodeIds.has(n.id));
+    if (nodes.length === 0 && (graph.nodes||[]).length) nodes = graph.nodes;
+
+    // Map to Cytoscape elements
+    const cyNodes = nodes.map(n => ({ data: { id: n.id, label: n.label || n.id, type: n.type || 'component', full_name: n.full_name || '' } }));
+    const cyEdges = edges.map(e => ({ data: { id: e.source + '->' + e.target + ':' + e.label, source: e.source, target: e.target, kind: e.kind, label: e.label || '' } }));
+
+    return { elements: [...cyNodes, ...cyEdges] };
+  }
+
+  function getElementsForActiveTab() {
+    const kindMap = { 'hardware': 'hardware', 'dailinks': 'dai', 'routing': 'routing' };
+    return filterGraph(kindMap[activeTab] || 'hardware').elements;
+  }
+
+  function renderActiveTab() {
+    const elements = getElementsForActiveTab();
+    const layoutName = document.getElementById('layoutSelect').value || 'cose-bilkent';
+
+    const style = [
+      { selector: 'node', style: {
+          'background-color': '#607d8b', 'label': 'data(label)', 'color':'#eee', 'font-size':'10px', 'text-valign': 'center', 'text-halign': 'center',
+          'width': 'label', 'height': 'label', 'padding':'6px', 'border-width': 1, 'border-color': '#374151', 'shape': 'round-rectangle'
+      }},
+      { selector: 'node[type = "sndcard"]', style: { 'background-color':'#ff9900', 'shape':'round-rectangle', 'font-weight':'bold' }},
+      { selector: 'node[type = "codec"]',   style: { 'background-color':'#00c853', 'shape':'round-rectangle' }},
+      { selector: 'node[type = "soc"]',     style: { 'background-color':'#2962ff', 'shape':'round-rectangle' }},
+
+      { selector: 'edge', style: {
+          'width': 2, 'line-color':'#999', 'target-arrow-color':'#999', 'target-arrow-shape':'triangle', 'curve-style':'bezier',
+          'label': 'data(label)', 'font-size':'9px', 'text-background-color':'#1e1e1e', 'text-background-opacity':1, 'text-background-padding':'2px', 'color':'#ccc'
+      }},
+      { selector: 'edge[kind = "dai"]', style: { 'line-color':'#3b82f6', 'target-arrow-color':'#3b82f6' }},
+      { selector: 'edge[kind = "routing"]', style: { 'line-color':'#eab308', 'target-arrow-color':'#eab308' }}
+    ];
+
+    const layoutOpts = layoutName === 'dagre' ? { name:'dagre', rankDir:'LR', nodeSep:30, edgeSep:10, rankSep:50 } : { name:'cose-bilkent', quality:'default', nodeRepulsion: 4500 };
+
+    if (!cy) {
+      cy = cytoscape({ container: document.getElementById('cy'), elements, style, layout: layoutOpts, pixelRatio: 1 });
+      // Click -> open Code Search
+      cy.on('tap', 'node', function(evt){
+        const d = evt.target.data();
+        const q = encodeURIComponent(d.full_name || d.label || d.id);
+        window.open(`/search?project={{ project }}&q=${q}`, '_blank');
+      });
+    } else {
+      cy.elements().remove();
+      cy.add(elements);
+      cy.style().fromJson(style).update();
+      cy.layout(layoutOpts).run();
     }
+  }
 
-    async function generate() {
-        const file = document.getElementById('file-select').value;
-        if (!file) return;
-        
-        document.getElementById('loading').classList.remove('hidden');
-        if(panZoomInstance) { panZoomInstance.destroy(); panZoomInstance = null; }
-        
-        try {
-            const res = await fetch('/api/viz/generate', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ project: "{{ project }}", mode: "{{ type }}", filename: file })
-            });
-            currentData = await res.json();
-            renderActiveTab();
-        } catch(e) { 
-            alert("Error: " + e); 
-        } finally { 
-            document.getElementById('loading').classList.add('hidden'); 
-        }
-    }
+  function fitToScreen(){ if (cy) { cy.fit(); cy.center(); } }
+  function downloadPNG(){ if (cy) { const png = cy.png({bg: '#1e1e1e', full: true, scale: 2}); const a = document.createElement('a'); a.href = png; a.download = 'diagram.png'; a.click(); } }
 
-    function switchTab(tab) {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.getElementById('tab-' + tab).classList.add('active');
-        document.getElementById('graph-container').dataset.tab = tab;
-        renderActiveTab();
-    }
-
-    async function renderActiveTab() {
-        if(!currentData) return;
-        const tab = document.getElementById('graph-container').dataset.tab || 'hardware';
-        const container = document.getElementById('graph-container');
-        const graphDef = currentData[tab];
-
-        // Debug: Log the Graph Code
-        console.log(`[V19 Debug] Render ${tab}:`, graphDef);
-
-        if(!graphDef || graphDef.length < 15) {
-            container.innerHTML = '<div class="text-gray-500">No diagram data available.</div>';
-            return;
-        }
-
-        container.innerHTML = `<pre class="mermaid">${graphDef}</pre>`;
-
-        try {
-            await window.mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
-            
-            const svg = container.querySelector('svg');
-            if(svg) {
-                svg.style.width = "100%"; 
-                svg.style.height = "100%";
-                
-                // Better ViewBox calculation
-                const bbox = svg.getBBox();
-                if(bbox.width > 0 && bbox.height > 0) {
-                     // Add slight padding
-                     svg.setAttribute('viewBox', `${bbox.x - 20} ${bbox.y - 20} ${bbox.width + 40} ${bbox.height + 40}`);
-                }
-
-                panZoomInstance = svgPanZoom(svg, {
-                    zoomEnabled: true, controlIconsEnabled: true, fit: true, center: true, minZoom: 0.1, maxZoom: 10
-                });
-                
-                // Smart Fit: Don't zoom out too much if graph is tiny
-                setTimeout(() => { 
-                    panZoomInstance.resize(); 
-                    panZoomInstance.fit(); 
-                    panZoomInstance.center();
-                    if(panZoomInstance.getZoom() > 2) { panZoomInstance.zoom(2); panZoomInstance.center(); }
-                }, 300);
-            }
-        } catch(e) {
-            container.innerHTML = `<div class="text-red-400 p-4">
-                <b>Render Error:</b> ${e.message}<br><br>
-                <div class="text-xs text-gray-500">Check Console (F12) for raw code.</div>
-            </div>`;
-        }
-    }
-
-    function resetZoom() {
-        if(panZoomInstance) {
-            panZoomInstance.resize(); panZoomInstance.fit(); panZoomInstance.center();
-        }
-    }
-
-    function downloadSVG() {
-        const svg = document.querySelector('#graph-container svg');
-        if(!svg) return;
-        const source = new XMLSerializer().serializeToString(svg);
-        const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
-        const a = document.createElement('a'); a.href = url; a.download = "diagram.svg"; a.click();
-    }
-    
-    function downloadPNG() {
-        const svg = document.querySelector('#graph-container svg');
-        if(!svg) return;
-        
-        // Convert SVG to Canvas
-        const canvas = document.createElement('canvas');
-        const bbox = svg.getBBox();
-        const scale = 2; // High Resolution
-        canvas.width = (bbox.width + 40) * scale;
-        canvas.height = (bbox.height + 40) * scale;
-        
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = "#1e1e1e"; // Dark background
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        const img = new Image();
-        const serializer = new XMLSerializer();
-        const svgStr = serializer.serializeToString(svg);
-        const svgBlob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
-        const url = URL.createObjectURL(svgBlob);
-        
-        img.onload = function() {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            const pngUrl = canvas.toDataURL("image/png");
-            const a = document.createElement('a'); a.href = pngUrl; a.download = "diagram.png"; a.click();
-            URL.revokeObjectURL(url);
-        };
-        img.src = url;
-    }
+  // Re-run layout when user changes layout type
+  document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('layoutSelect');
+    if (sel) sel.addEventListener('change', () => renderActiveTab());
+  });
 </script>
 </body>
 </html>
 '''
-
 
 BUILD_CONSOLE_HTML = """
 <div class="flex flex-col h-full space-y-4">
@@ -1437,6 +1405,12 @@ def api_viz_generate():
     # [V16 FIX] Build all diagrams
     builder = DiagramBuilder(parser)
     diagrams = builder.build_all()
+    # Ensure JSON graph is included for Cytoscape (Step-2 harden)
+    try:
+        diagrams["graph"] = builder.build_graph_json()
+    except Exception:
+        diagrams["graph"] = {"nodes": [], "edges": []}
+
     return jsonify(diagrams)
 
 if __name__ == '__main__':
