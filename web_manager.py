@@ -463,13 +463,19 @@ VIZ_HTML = r'''
   <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
   <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-  <script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
   <style>
     html, body { height: 100%; width: 100%; margin: 0; overflow: hidden; background-color: #121212; color:#d4d4d4; }
     #main-viewport { width: 100%; height: calc(100vh - 110px); background:#1e1e1e; position: relative; }
     #cy { width: 100%; height: 100%; }
     .tab-btn.active { border-bottom: 2px solid #3b82f6; color:#3b82f6; }
   </style>
+# --- BEGIN: Add these two style rules after your base `node` style in VIZ_HTML ---
+,{ selector: 'node[type = "group"]', style: {
+  'shape':'round-rectangle','background-color':'#111827','border-color':'#374151','border-width':2,
+  'label':'data(label)','text-valign':'top','text-halign':'center','font-weight':'bold','color':'#9ca3af','padding':'20px'
+}}
+,{ selector: '$node > node', style: { 'padding': '4px' } }
+# --- END: style rules ---
 </head>
 <body class="flex flex-col h-screen">
   <!-- HEADER -->
@@ -574,23 +580,29 @@ VIZ_HTML = r'''
     document.getElementById('tab-' + tab).classList.add('active');
     renderActiveTab();
   }
-
-  function filterGraph(kind) {
-    if (!graph) return { elements: [] };
-    const edges = (graph.edges || []).filter(e => e.kind === kind);
-    const nodeIds = new Set();
-    edges.forEach(e => { nodeIds.add(e.source); nodeIds.add(e.target); });
-
-    // Include nodes that participate in edges; if none (e.g., hardware has no edges), include all
-    let nodes = (graph.nodes || []).filter(n => nodeIds.has(n.id));
-    if (nodes.length === 0 && (graph.nodes||[]).length) nodes = graph.nodes;
-
-    // Map to Cytoscape elements
-    const cyNodes = nodes.map(n => ({ data: { id: n.id, label: n.label || n.id, type: n.type || 'component', full_name: n.full_name || '' } }));
-    const cyEdges = edges.map(e => ({ data: { id: e.source + '->' + e.target + ':' + e.label, source: e.source, target: e.target, kind: e.kind, label: e.label || '' } }));
-
-    return { elements: [...cyNodes, ...cyEdges] };
-  }
+function filterGraph(kind) {
+  if (!graph) return { elements: [] };
+  const edges = (graph.edges || []).filter(e => e.kind === kind);
+  const nodeIds = new Set();
+  edges.forEach(e => { nodeIds.add(e.source); nodeIds.add(e.target); });
+  // Start with only nodes that participate
+  let nodes = (graph.nodes || []).filter(n => nodeIds.has(n.id));
+  // If none (e.g., hardware had no edges earlier), include all
+  if (nodes.length === 0 && (graph.nodes||[]).length) nodes = graph.nodes;
+  // ALWAYS include group containers so lanes appear
+  const groups = (graph.nodes || []).filter(n => n.type === 'group');
+  nodes = [...groups, ...nodes];
+  // Map to Cytoscape elements (FIXED)
+  const cyNodes = nodes.map(n => ({ data: {
+    id: n.id,
+    label: n.label || n.id,
+    type: n.type || 'component',
+    full_name: n.full_name || '',
+    parent: n.parent || undefined
+  }}));
+  const cyEdges = edges.map(e => ({ data: { id: (e.source + '->' + e.target + ':' + e.label).slice(0,160), source: e.source, target: e.target, kind: e.kind, label: e.label || '' } }));
+  return { elements: [...cyNodes, ...cyEdges] };
+}
 
   function getElementsForActiveTab() {
     const kindMap = { 'hardware': 'hardware', 'dailinks': 'dai', 'routing': 'routing' };
@@ -599,7 +611,7 @@ VIZ_HTML = r'''
 
   function renderActiveTab() {
     const elements = getElementsForActiveTab();
-    const layoutName = document.getElementById('layoutSelect').value || 'cose-bilkent';
+    const layoutName = 'dagre';
 
     const style = [
       { selector: 'node', style: {
