@@ -469,13 +469,7 @@ VIZ_HTML = r'''
     #cy { width: 100%; height: 100%; }
     .tab-btn.active { border-bottom: 2px solid #3b82f6; color:#3b82f6; }
   </style>
-# --- BEGIN: Add these two style rules after your base `node` style in VIZ_HTML ---
-,{ selector: 'node[type = "group"]', style: {
-  'shape':'round-rectangle','background-color':'#111827','border-color':'#374151','border-width':2,
-  'label':'data(label)','text-valign':'top','text-halign':'center','font-weight':'bold','color':'#9ca3af','padding':'20px'
-}}
-,{ selector: '$node > node', style: { 'padding': '4px' } }
-# --- END: style rules ---
+
 </head>
 <body class="flex flex-col h-screen">
   <!-- HEADER -->
@@ -545,6 +539,8 @@ VIZ_HTML = r'''
       .then(data => { allFiles = data.files || []; populateSelect(allFiles); });
   }
 
+  
+
   function populateSelect(files) {
     const sel = document.getElementById('file-select');
     sel.innerHTML = '';
@@ -609,53 +605,65 @@ function filterGraph(kind) {
     return filterGraph(kindMap[activeTab] || 'hardware').elements;
   }
 
-  function renderActiveTab() {
-    const elements = getElementsForActiveTab();
-    const layoutName = 'dagre';
+function renderActiveTab() {
+  const elements = getElementsForActiveTab();
+  const layoutName = 'dagre';
 
-    const style = [
-      { selector: 'node', style: {
-          'background-color': '#607d8b', 'label': 'data(label)', 'color':'#eee', 'font-size':'10px', 'text-valign': 'center', 'text-halign': 'center',
-          'width': 'label', 'height': 'label', 'padding':'6px', 'border-width': 1, 'border-color': '#374151', 'shape': 'round-rectangle'
-      }},
-      { selector: 'node[type = "sndcard"]', style: { 'background-color':'#ff9900', 'shape':'round-rectangle', 'font-weight':'bold' }},
-      { selector: 'node[type = "codec"]',   style: { 'background-color':'#00c853', 'shape':'round-rectangle' }},
-      { selector: 'node[type = "soc"]',     style: { 'background-color':'#2962ff', 'shape':'round-rectangle' }},
+  const style = [
+    // Base node
+    { selector: 'node', style: {
+        'background-color': '#607d8b', 'label': 'data(label)', 'color':'#eee', 'font-size':'10px',
+        'text-valign': 'center', 'text-halign': 'center',
+        'width': 'label', 'height': 'label', 'padding':'6px',
+        'border-width': 1, 'border-color': '#374151',
+        'shape': 'round-rectangle'
+    }},
+    // LANE (group) styling
+    { selector: 'node[type = "group"]', style: {
+        'shape':'round-rectangle','background-color':'#111827','border-color':'#374151','border-width':2,
+        'label':'data(label)','text-valign':'top','text-halign':'center','font-weight':'bold','color':'#9ca3af','padding':'20px'
+    }},
+    { selector: '$node > node', style: { 'padding': '4px' }},
 
-      { selector: 'edge', style: {
-          'width': 2, 'line-color':'#999', 'target-arrow-color':'#999', 'target-arrow-shape':'triangle', 'curve-style':'bezier',
-          'label': 'data(label)', 'font-size':'9px', 'text-background-color':'#1e1e1e', 'text-background-opacity':1, 'text-background-padding':'2px', 'color':'#ccc'
-      }},
-      { selector: 'edge[kind = "dai"]', style: { 'line-color':'#3b82f6', 'target-arrow-color':'#3b82f6' }},
-      { selector: 'edge[kind = "routing"]', style: { 'line-color':'#eab308', 'target-arrow-color':'#eab308' }}
-    ];
+    // Types
+    { selector: 'node[type = "sndcard"]',  style: { 'background-color':'#ff9900', 'shape':'round-rectangle', 'font-weight':'bold' }},
+    { selector: 'node[type = "codec"]',    style: { 'background-color':'#00c853', 'shape':'round-rectangle' }},
+    { selector: 'node[type = "soc"]',      style: { 'background-color':'#2962ff', 'shape':'round-rectangle' }},
 
-    const layoutOpts = layoutName === 'dagre' ? { name:'dagre', rankDir:'LR', nodeSep:30, edgeSep:10, rankSep:50 } : { name:'cose-bilkent', quality:'default', nodeRepulsion: 4500 };
+    // Buses & SWR lanes
+    { selector: 'node[type = "bus"]',      style: { 'background-color':'#0ea5e9','color':'#022c22','border-color':'#155e75','border-width':1 }},
+    { selector: 'node[id ^= "bus.swr"]',   style: { 'background-color':'#06b6d4','border-color':'#0e7490','border-width':1,'font-weight':'bold' }},
 
-    if (!cy) {
-      cy = cytoscape({ container: document.getElementById('cy'), elements, style, layout: layoutOpts, pixelRatio: 1 });
-      // Click -> open Code Search
-      cy.on('tap', 'node', function(evt){
-        const d = evt.target.data();
-        const q = encodeURIComponent(d.full_name || d.label || d.id);
-        window.open(`/search?project={{ project }}&q=${q}`, '_blank');
-      });
-    } else {
-      cy.elements().remove();
-      cy.add(elements);
-      cy.style().fromJson(style).update();
-      cy.layout(layoutOpts).run();
-    }
+    // Amplifiers & Speakers
+    { selector: 'node[type = "amp"]',      style: { 'background-color':'#f59e0b','color':'#1f2937','border-color':'#b45309' }},
+    { selector: 'node[type = "speaker"]',  style: { 'background-color':'#fb923c','color':'#1f2937','border-color':'#c2410c' }},
+
+    // Edges
+    { selector: 'edge',                    style: {
+        'width': 2, 'line-color':'#999', 'target-arrow-color':'#999', 'target-arrow-shape':'triangle', 'curve-style':'bezier',
+        'label': 'data(label)', 'font-size':'9px', 'text-background-color':'#1e1e1e', 'text-background-opacity':1, 'text-background-padding':'2px', 'color':'#ccc'
+    }},
+    { selector: 'edge[kind = "dai"]',      style: { 'line-color':'#3b82f6', 'target-arrow-color':'#3b82f6' }},
+    { selector: 'edge[kind = "routing"]',  style: { 'line-color':'#eab308', 'target-arrow-color':'#eab308' }}
+  ];
+
+  const layoutOpts = { name:'dagre', rankDir:'LR', nodeSep:60, edgeSep:20, rankSep:100, ranker:'tight-tree' };
+
+  if (!cy) {
+    cy = cytoscape({ container: document.getElementById('cy'), elements, style, layout: layoutOpts, pixelRatio: 1 });
+    cy.on('tap', 'node', function(evt){
+      const d = evt.target.data();
+      const q = encodeURIComponent(d.full_name || d.label || d.id);
+      window.open(`/search?project={{ project }}&q=${q}`, '_blank');
+    });
+  } else {
+    cy.elements().remove();
+    cy.add(elements);
+    cy.style().fromJson(style).update();
+    cy.layout(layoutOpts).run();
   }
+}
 
-  function fitToScreen(){ if (cy) { cy.fit(); cy.center(); } }
-  function downloadPNG(){ if (cy) { const png = cy.png({bg: '#1e1e1e', full: true, scale: 2}); const a = document.createElement('a'); a.href = png; a.download = 'diagram.png'; a.click(); } }
-
-  // Re-run layout when user changes layout type
-  document.addEventListener('DOMContentLoaded', () => {
-    const sel = document.getElementById('layoutSelect');
-    if (sel) sel.addEventListener('change', () => renderActiveTab());
-  });
 </script>
 </body>
 </html>
